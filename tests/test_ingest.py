@@ -141,6 +141,35 @@ class JobTest(unittest.TestCase):
         self.assertTrue(j2.dest.endswith("UUID-01-2"))
         j1.release(), j2.release()
 
+    def test_armed_wipe_refuses_source_changed_after_verify(self):
+        """TOCTOU: a source file altered between verify and wipe (even at the
+        same length) must not be deleted; the whole card is kept."""
+        j = self.job(wipe_armed=True)
+        j.run()
+        self.assertEqual(j.state, ingest.PENDING)
+        victim = os.path.join(self.src, "DCIM/100/IMG_0001.JPG")  # sorts first
+        with open(victim, "wb") as fh:
+            fh.write(b"z" * 3000)          # same length, different bytes
+        self.assertTrue(j.request_wipe())
+        self._await_state(j, ingest.ERROR)
+        self.assertEqual(j.error, "SRC CHANGED")
+        for rel in self.files:             # nothing deleted
+            self.assertTrue(os.path.exists(os.path.join(self.src, rel)))
+
+    def test_resume_rehashes_and_rejects_corrupt_dest(self):
+        """A destination that silently corrupted but kept its size must NOT be
+        trusted on resume (else a bad copy could authorise a wipe)."""
+        j1 = self.job()
+        j1.run()
+        j1.release()
+        victim = os.path.join(j1.dest, "note.txt")
+        with open(victim, "wb") as fh:
+            fh.write(b"world")             # same 5 bytes as "hello", different
+        j2 = self.job()
+        j2.scan()
+        self.assertNotIn("note.txt", j2._skipped)
+        self.assertEqual(len(j2._skipped), len(self.files) - 1)
+
     def _await_state(self, job, state, timeout=5.0):
         import time
         deadline = time.monotonic() + timeout
@@ -148,6 +177,20 @@ class JobTest(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline,
                             "job stuck in %s" % job.state)
             time.sleep(0.01)
+
+
+class ConfigTest(unittest.TestCase):
+    def test_as_bool_rejects_quoted_false(self):
+        for v in ("false", "0", "no", "off", "  False  ", ""):
+            self.assertFalse(ingest.as_bool(v), "%r must be False" % v)
+        for v in ("true", "1", "yes", "on", True):
+            self.assertTrue(ingest.as_bool(v), "%r must be True" % v)
+        self.assertFalse(ingest.as_bool(False))
+
+    def test_color_accepts_int_and_str(self):
+        self.assertEqual(ingest.color("#22C35E"), 0x22C35E)
+        self.assertEqual(ingest.color("22c35e"), 0x22C35E)
+        self.assertEqual(ingest.color(0x22C35E), 0x22C35E)
 
 
 class EmitterTest(unittest.TestCase):

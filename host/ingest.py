@@ -78,8 +78,21 @@ def load_config(path):
 
 
 def color(s):
-    """'#RRGGBB' / 'RRGGBB' -> int, for '%06x' protocol fields."""
+    """'#RRGGBB' / 'RRGGBB' / int -> int, for '%06x' protocol fields."""
+    if isinstance(s, int):
+        return s & 0xFFFFFF            # already a number; don't re-parse as hex
     return int(str(s).lstrip("#"), 16) & 0xFFFFFF
+
+
+def as_bool(v):
+    """Strict truthiness for config values: a TOML bool stays itself, but a
+    quoted string like "false"/"0"/"no" must NOT read as True (plain Python
+    truthiness treats any non-empty string as True)."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
 
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +101,12 @@ def color(s):
 # A "slot" is a fixed physical position (reader LUN); its index never moves
 # while the daemon runs, so bars hold their place on the display. A slot is
 # occupied when its block device reports non-zero size (media present).
+
+# slots() yields one of: a Card (media present), None (definitely absent), or
+# UNKNOWN (probe hit a transient error — leave the slot's job untouched rather
+# than falsely declaring the card removed mid-copy).
+UNKNOWN = object()
+
 
 class Card:
     """A present card: identity + where to read it from."""
@@ -142,8 +161,8 @@ class HubDiscovery:
         try:
             with open("/sys/class/block/%s/size" % node) as fh:
                 sectors = int(fh.read())
-        except OSError:
-            return None
+        except (OSError, ValueError):
+            return UNKNOWN                    # transient read error, not removal
         if sectors == 0:
             return None                       # reader present, no media
         cap = sectors * 512
@@ -275,6 +294,7 @@ class CardJob:
         self._skipped = set()                 # relpaths resumed from a manifest
         self.wiped = False                    # a confirm-triggered wipe ran
         self.throttle_bps = 0                 # dry-run pacing; 0 = full speed
+        self._run_done = threading.Event()    # set when the copy worker exits
 
     @staticmethod
     def _claim_dest(base, uuid):
@@ -316,6 +336,12 @@ class CardJob:
             import errno
             self.fail("DEST FULL" if e.errno == errno.ENOSPC else "IO ERROR")
             print("ingest: %s: %s" % (self.card.label, e), file=sys.stderr)
+        except Exception as e:                # never let the worker die silently
+            self.fail("ERROR")
+            print("ingest: %s: worker error: %s"
+                  % (self.card.label, e), file=sys.stderr)
+        finally:
+            self._run_done.set()              # dest is safe to release once set
 
     def fail(self, why):
         self.state, self.error = ERROR, why   # keep the card; never delete
@@ -336,15 +362,27 @@ class CardJob:
         old = self.read_manifest()
         for rel, sz in self._files:
             dst = os.path.join(self.dest, rel)
-            if (rel in old and old[rel]["size"] == sz
+            if not (rel in old and old[rel]["size"] == sz
                     and os.path.isfile(dst) and os.path.getsize(dst) == sz):
-                self._skipped.add(rel)        # verified in an earlier run
-                self._hashes[rel] = old[rel]["hash"]
-                self.copied_bytes += sz
-                self.verified_bytes += sz
+                continue
+            # Size + manifest match is not enough to skip: re-hash the existing
+            # destination and only trust it if the bytes still match. Otherwise
+            # a silently-corrupted (but same-length) copy would be treated as
+            # verified and could authorise wiping the intact source.
+            try:
+                got = hash_file(dst, self.algo, check=self._check_abort)
+            except OSError:
+                continue                      # unreadable -> just re-copy it
+            if got != old[rel]["hash"]:
+                continue                      # corrupt/stale -> re-copy it
+            self._skipped.add(rel)            # verified in an earlier run
+            self._hashes[rel] = old[rel]["hash"]
+            self.copied_bytes += sz
+            self.verified_bytes += sz
 
     def copy_all(self):
         """Whole-file copies; the source hash is computed on the same stream."""
+        dirs = set()
         for rel, _sz in self._files:
             if rel in self._skipped:
                 continue
@@ -352,21 +390,33 @@ class CardJob:
             src = os.path.join(self.card.mountpoint, rel)
             dst = os.path.join(self.dest, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
+            part = dst + ".part"
             h = hashlib.new(self.algo)
-            with open(src, "rb") as fi, open(dst + ".part", "wb") as fo:
-                while True:
-                    self._check_abort()
-                    chunk = fi.read(CHUNK)
-                    if not chunk:
-                        break
-                    h.update(chunk)
-                    fo.write(chunk)
-                    self.copied_bytes += len(chunk)
-                    self._pace(len(chunk))
-                fo.flush()
-                os.fsync(fo.fileno())
-            os.replace(dst + ".part", dst)    # never leave torn files visible
+            try:
+                with open(src, "rb") as fi, open(part, "wb") as fo:
+                    while True:
+                        self._check_abort()
+                        chunk = fi.read(CHUNK)
+                        if not chunk:
+                            break
+                        h.update(chunk)
+                        fo.write(chunk)
+                        self.copied_bytes += len(chunk)
+                        self._pace(len(chunk))
+                    fo.flush()
+                    os.fsync(fo.fileno())
+                os.replace(part, dst)         # never leave torn files visible
+            except BaseException:
+                # abort / IO error: don't leave a half-written .part behind
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+                raise
             self._hashes[rel] = h.hexdigest()
+            dirs.add(os.path.dirname(dst))
+        for d in dirs:                        # make the renames durable
+            _fsync_dir(d)
 
     def verify_all(self):
         """Re-read every destination file and compare to the source hash."""
@@ -375,7 +425,8 @@ class CardJob:
                 continue
             self._check_abort()
             got = hash_file(os.path.join(self.dest, rel), self.algo,
-                            pace=self._pace, check=self._check_abort)
+                            pace=self._pace, check=self._check_abort,
+                            drop_cache=True)   # read from media, not page cache
             if got != self._hashes[rel]:
                 self.fail("HASH FAIL")        # keep card + copy; human decides
                 raise Abort()
@@ -392,8 +443,11 @@ class CardJob:
                 m = json.load(fh)
             if m.get("algo") != self.algo:
                 return {}
-            return {f["path"]: f for f in m.get("files", [])}
-        except (OSError, ValueError, KeyError):
+            # only keep well-formed entries; a foreign/hand-edited manifest with
+            # a missing key must not KeyError later in scan() and kill the worker
+            return {f["path"]: f for f in m.get("files", [])
+                    if isinstance(f, dict) and {"path", "size", "hash"} <= f.keys()}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return {}
 
     def write_manifest(self):
@@ -407,7 +461,10 @@ class CardJob:
         with open(tmp, "w") as fh:
             json.dump(m, fh, indent=1)
             fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())             # manifest data durable before wipe
         os.replace(tmp, self.manifest_path())
+        _fsync_dir(self.dest)                 # and its rename durable too
 
     # ---- wipe (only ever entered via a confirm on a PENDING job) -----------
 
@@ -423,29 +480,74 @@ class CardJob:
         return True
 
     def _wipe(self):
-        """Delete ONLY files listed in the just-written manifest (each one has
-        a verified copy). Dry run unless config + CLI both armed it."""
+        """Delete ONLY files listed in the just-written manifest, and ONLY after
+        re-confirming each source still byte-matches the copy we verified — so a
+        file changed after verification is never deleted. Dry run unless config
+        + CLI both armed it."""
         mode = "WIPE" if self.wipe_armed else "DRY-RUN wipe (kept)"
+        deleted = failed = 0
         for rel, _sz in self._files:
+            if self.abort:                    # card pulled mid-wipe: stop now
+                print("ingest: %s: wipe aborted (card removed)"
+                      % self.card.label, file=sys.stderr)
+                self.fail("REMOVED")
+                return
             src = os.path.join(self.card.mountpoint, rel)
             print("ingest: %s: %s %s" % (self.card.label, mode, src),
                   file=sys.stderr)
-            if self.wipe_armed:
-                try:
-                    os.remove(src)
-                except OSError as e:
-                    self.fail("WIPE ERR")
-                    print("ingest: wipe failed: %s" % e, file=sys.stderr)
-                    return
-        if self.wipe_armed:                   # prune now-empty directories
-            for root, dirs, names in os.walk(self.card.mountpoint, topdown=False):
-                if not dirs and not names and root != self.card.mountpoint:
-                    try:
-                        os.rmdir(root)
-                    except OSError:
-                        pass
+            if not self.wipe_armed:
+                continue
+            # TOCTOU guard: re-hash the source and refuse to delete unless it
+            # still matches the hash whose copy we verified. Anything else
+            # (changed in place, unreadable) keeps the whole card, human decides.
+            try:
+                now = hash_file(src, self.algo, check=self._check_abort)
+            except Abort:
+                self.fail("REMOVED")
+                return
+            except OSError:
+                now = None
+            if now != self._hashes.get(rel):
+                print("ingest: %s: SOURCE CHANGED since verify, aborting wipe "
+                      "(%s)" % (self.card.label, src), file=sys.stderr)
+                self.fail("SRC CHANGED")
+                return
+            try:
+                os.remove(src)
+                deleted += 1
+            except OSError as e:
+                failed += 1
+                print("ingest: %s: wipe failed on %s: %s"
+                      % (self.card.label, src, e), file=sys.stderr)
+        if failed:
+            self.fail("WIPE ERR")
+            print("ingest: %s: wiped %d/%d files, %d failed"
+                  % (self.card.label, deleted, len(self._files), failed),
+                  file=sys.stderr)
+            return
+        if self.wipe_armed:
+            self._prune_dirs()
         self.wiped = True
         self.state = EMPTY
+
+    def _prune_dirs(self):
+        """rmdir only the (now-empty) directories that held manifest files —
+        never arbitrary pre-existing empty directories under the mountpoint."""
+        mnt = os.path.realpath(self.card.mountpoint)
+        dirs = set()
+        for rel, _sz in self._files:
+            d = os.path.dirname(os.path.join(self.card.mountpoint, rel))
+            while True:
+                rd = os.path.realpath(d)
+                if rd == mnt or not rd.startswith(mnt + os.sep):
+                    break
+                dirs.add(d)
+                d = os.path.dirname(d)
+        for d in sorted(dirs, key=len, reverse=True):   # deepest first
+            try:
+                os.rmdir(d)                             # only succeeds if empty
+            except OSError:
+                pass
 
     # ---- worker plumbing ----------------------------------------------------
 
@@ -462,9 +564,17 @@ class Abort(Exception):
     pass
 
 
-def hash_file(path, algo, pace=None, check=None):
+def hash_file(path, algo, pace=None, check=None, drop_cache=False):
     h = hashlib.new(algo)
     with open(path, "rb") as fh:
+        if drop_cache:
+            # evict this file from the page cache so the read below actually
+            # comes off the destination media (Linux; best-effort elsewhere).
+            try:
+                os.fsync(fh.fileno())
+                os.posix_fadvise(fh.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+            except (AttributeError, OSError):
+                pass
         while True:
             if check:
                 check()
@@ -474,6 +584,18 @@ def hash_file(path, algo, pace=None, check=None):
             h.update(chunk)
             if pace:
                 pace(len(chunk))
+
+
+def _fsync_dir(path):
+    """Durably persist a directory's entries (renames) — best-effort."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -492,27 +614,41 @@ class Emitter:
         self.cop = color(seg_cfg["copied"])
         self.unc = color(seg_cfg["uncopied"])
         self.bg = color(seg_cfg["empty"])
-        self.numbers = 1 if seg_cfg.get("numbers", True) else 0
+        self.numbers = 1 if as_bool(seg_cfg.get("numbers", True)) else 0
         self._rate = {}                        # slot -> (t, done_bytes, ewma bps)
         self._paths = {}                       # last `path` sent per slot
+        self._last_warn = 0.0                  # rate-limit link-hiccup warnings
 
     def emit(self, line):
         try:
             self.out.write(line + "\n")
         except BrokenPipeError:
             self._display_gone()
+        except OSError as e:
+            self._link_hiccup(e)
 
     def flush(self):
         try:
             self.out.flush()
         except BrokenPipeError:
             self._display_gone()
+        except OSError as e:
+            self._link_hiccup(e)
 
     @staticmethod
     def _display_gone():
-        """The pipe reader (sim / serial) went away; exit quietly. os._exit
+        """The pipe reader (sim / stdout) went away; exit quietly. os._exit
         skips interpreter shutdown, which would try to flush dead stdout."""
         os._exit(0)
+
+    def _link_hiccup(self, e):
+        """A non-fatal write error (e.g. a serial glitch on a real link): warn,
+        rate-limited, and skip this frame rather than crash mid-ingest."""
+        now = time.monotonic()
+        if now - self._last_warn > 5:
+            self._last_warn = now
+            print("ingest: display write error (skipping frame): %s" % e,
+                  file=sys.stderr)
 
     def preamble(self):
         self.emit("clear")
@@ -556,8 +692,7 @@ class Emitter:
             VERIFYING: ("active", job.card.label),
             PENDING:   ("pending", job.card.label),
             WIPING:    ("active", "WIPING"),
-            EMPTY:     ("idle", "EMPTY" if not job.wiped
-                        else ("WIPED" if job.wipe_armed else "DRY WIPE")),
+            EMPTY:     ("idle", "empty"),      # tick() renders EMPTY as a blank row
             ERROR:     ("error", job.error or "ERROR"),
         }[job.state]
         eta = self._eta(i, job)
@@ -587,14 +722,27 @@ class Emitter:
 # Confirm channel: `confirm <i>` lines from the device (or a human on stdin)
 # --------------------------------------------------------------------------- #
 
-def confirm_reader(stream, q):
-    """Thread: parse confirm lines into a queue of slot indices."""
-    for raw in stream:
-        if isinstance(raw, bytes):
-            raw = raw.decode("ascii", "replace")
-        m = re.match(r"\s*confirm\s+(\d+)\s*$", raw)
-        if m:
-            q.put(int(m.group(1)))
+def confirm_reader(stream, q, reopen=None):
+    """Thread: parse `confirm <i>` lines into a queue of slot indices. When a
+    reopen() is given (a serial link), a read error / EOF reconnects instead of
+    silently killing the wipe-authorisation channel; on stdin, EOF just ends."""
+    while True:
+        try:
+            for raw in stream:
+                if isinstance(raw, bytes):
+                    raw = raw.decode("ascii", "replace")
+                m = re.match(r"\s*confirm\s+(\d+)\s*$", raw)
+                if m:
+                    q.put(int(m.group(1)))
+        except OSError as e:
+            print("ingest: confirm read error: %s" % e, file=sys.stderr)
+        if reopen is None:
+            return                             # stdin/pipe closed: nothing more
+        try:
+            stream = reopen()                  # serial disconnect: reconnect
+        except OSError as e:
+            print("ingest: confirm reopen failed: %s" % e, file=sys.stderr)
+            time.sleep(1)
 
 
 def open_serial(port):
@@ -632,12 +780,13 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    if args.interval_ms:
+    if args.interval_ms is not None:           # honour an explicit 0, too
         cfg["poll"]["interval_ms"] = args.interval_ms
 
     # Real deletion needs BOTH the config flag and the CLI flag; and never in
     # a dry run (the "cards" there are scratch files, but stay consistent).
-    wipe_armed = (cfg["wipe"].get("enabled", False) and args.enable_wipe
+    # as_bool() so a quoted `enabled = "false"` can't read as True.
+    wipe_armed = (as_bool(cfg["wipe"].get("enabled", False)) and args.enable_wipe
                   and not args.dry_run)
     if args.enable_wipe and not wipe_armed:
         print("ingest: --enable-wipe ignored ([wipe] enabled is false%s)"
@@ -657,15 +806,21 @@ def main():
     port = args.port or cfg["serial"]["port"]
     if port and not args.dry_run:
         rx, tx = open_serial(port)
+        def reopen_rx():                       # reconnect just the read side
+            r, t = open_serial(port)
+            t.close()
+            return r
     else:
         rx, tx = sys.stdin, sys.stdout
+        reopen_rx = None
     emitter = Emitter(tx, cfg["segments"])
     confirms = queue.Queue()
     threading.Thread(target=confirm_reader, args=(rx, confirms),
-                     daemon=True).start()
+                     kwargs={"reopen": reopen_rx}, daemon=True).start()
 
     emitter.preamble()
     jobs = {}                                  # slot index -> CardJob
+    retiring = []                              # removed jobs awaiting worker exit
     interval = cfg["poll"]["interval_ms"] / 1000.0
     pending_since = {}                         # slot -> t (for --auto-confirm)
     tick = 0
@@ -675,16 +830,16 @@ def main():
 
         # Reconcile discovery with running jobs.
         for i, card in enumerate(slots):
+            if card is UNKNOWN:
+                continue                       # transient probe error; leave as-is
             job = jobs.get(i)
             if job and (card is None or card.ident != job.card.ident):
-                if not job.abort:              # first tick after removal
-                    job.abort = True
-                    job.release()
-                    if job.state in (IDLE, COPYING, VERIFYING, WIPING):
-                        job.fail("REMOVED")    # yanked mid-flight
-                if card is not None or job.state != ERROR:
-                    del jobs[i]                # clear (or make room for) slot
-                    job = None                 # else: error tombstone stays
+                job.abort = True               # stop its worker
+                if job.state in (IDLE, COPYING, VERIFYING, WIPING):
+                    job.fail("REMOVED")        # yanked mid-flight
+                retiring.append(job)           # release dest once its worker stops
+                del jobs[i]
+                job = None
             if card is not None and job is None:
                 if card.mountpoint is None:
                     continue                   # present but unreadable; skip
@@ -693,6 +848,17 @@ def main():
                     job.throttle_bps = 1_500_000  # visible progress in the sim
                 jobs[i] = job
                 job.start()
+
+        # Release a removed job's dest claim only once its copy worker has
+        # actually stopped, so a duplicate-UUID card can't re-claim and write a
+        # directory another thread is still using.
+        keep = []
+        for j in retiring:
+            if j._run_done.is_set():
+                j.release()
+            else:
+                keep.append(j)
+        retiring = keep
 
         # Wipe confirmations (the only path to deletion).
         try:
