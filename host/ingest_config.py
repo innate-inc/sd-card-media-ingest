@@ -3,6 +3,10 @@
 Every value has a built-in default; a TOML file (or a CLI flag) overrides it.
 """
 import logging
+import os
+
+BASE_CONFIG = "ingest.toml"       # tracked defaults (committed to git)
+LOCAL_CONFIG = "config.toml"      # local overrides (gitignored); layered on top
 
 
 def setup_logging():
@@ -45,16 +49,27 @@ DEFAULTS = {
 }
 
 
-def load_config(path):
-    """DEFAULTS overlaid with the TOML file (one level deep, like the tables)."""
+def load_config(*paths):
+    """DEFAULTS overlaid with each TOML file in order -- later files win, one
+    level deep like the tables. Missing (or None) paths are skipped, so the
+    usual call is load_config(BASE_CONFIG, LOCAL_CONFIG): tracked defaults, then
+    gitignored local overrides on top."""
     cfg = {k: dict(v) for k, v in DEFAULTS.items()}
-    if path:
+    for path in paths:
+        if not path or not os.path.exists(path):
+            continue
         import tomllib  # stdlib in Python >= 3.11 (flake pins 3.12)
         with open(path, "rb") as fh:
             user = tomllib.load(fh)
         for section, values in user.items():
             cfg.setdefault(section, {}).update(values)
     return cfg
+
+
+def config_paths(override):
+    """The config files to load: an explicit --config (alone), else the tracked
+    base + local overrides. Returns a list for load_config(*...)."""
+    return [override] if override else [BASE_CONFIG, LOCAL_CONFIG]
 
 
 def color(s):

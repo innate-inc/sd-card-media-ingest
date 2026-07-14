@@ -198,14 +198,34 @@
           # (e.g. a "both:" combine remote to show local + cloud together).
           http = pkgs.writeShellApplication {
             name = "http";
-            runtimeInputs = [ pkgs.rclone ];
+            runtimeInputs = [ pkgs.rclone pkgs.gawk ];
             text = ''
               export RCLONE_CONFIG="''${RCLONE_CONFIG:-$PWD/rclone.conf}"
-              val() { sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"?([^\"#]*[^\"# ]).*/\1/p" ingest.toml 2>/dev/null | head -1 || true; }
-              target="$(val target)"
-              addr="$(val addr)"; [ -n "$addr" ] || addr=":8080"
+              # read [section] key, config.toml (local overrides) winning over ingest.toml
+              get() {
+                for f in config.toml ingest.toml; do
+                  v=$(awk -v s="[$1]" -v k="$2" '
+                    $0==s{inx=1;next} /^\[/{inx=0}
+                    inx && $1==k {sub(/^[^=]*=[ \t]*/,"");gsub(/"/,"");sub(/[ \t]*#.*$/,"");sub(/[ \t]+$/,"");print;exit}
+                  ' "$f" 2>/dev/null || true)
+                  [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+                done
+                return 0
+              }
+              addr=$(get http addr); [ -n "$addr" ] || addr=":8080"
+              target=$(get http target)
               if [ -z "$target" ]; then
-                echo "http: set [http] target in ./ingest.toml (a path, or a combine remote like both:)" >&2
+                # default: serve local dest AND cloud remote in one combined view
+                localbase=$(get dest base)
+                remotebase=$(get remote base)
+                if [ -n "$localbase" ] && [ -n "$remotebase" ]; then
+                  target=":combine,upstreams=\"local=$localbase cloud=$remotebase\":"
+                else
+                  target="$localbase"
+                fi
+              fi
+              if [ -z "$target" ]; then
+                echo "http: nothing to serve (set [dest] base, [remote] base, or [http] target)" >&2
                 exit 1
               fi
               echo "rclone serve http: $target on $addr"

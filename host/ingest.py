@@ -26,7 +26,8 @@ import tempfile
 import threading
 import time
 
-from ingest_config import as_bool, human_bytes, load_config, setup_logging
+from ingest_config import (as_bool, config_paths, human_bytes, load_config,
+                           setup_logging)
 from ingest_copier import (CardJob, COPYING, IDLE, PENDING, read_uploaded,
                            VERIFYING, WIPING)
 from ingest_discovery import HubDiscovery, MockDiscovery, UNKNOWN
@@ -34,8 +35,6 @@ from ingest_emit import Emitter
 from ingest_link import confirm_reader, ReconnectingSerial
 
 log = logging.getLogger("ingest")
-
-DEFAULT_CONFIG = "ingest.toml"   # in the working dir (project dir), not /etc
 
 
 def open_display(cfg, args):
@@ -74,7 +73,8 @@ def _auto_confirm(jobs, pending_since, after_s):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", help="TOML config (default: ./ingest.toml)")
+    ap.add_argument("--config", help="one TOML config, replacing the default "
+                    "./ingest.toml + ./config.toml layering")
     ap.add_argument("--dry-run", action="store_true",
                     help="fake cards in a scratch dir; no hardware, no serial")
     ap.add_argument("--vid", help="USB vendor id of the device (overrides config)")
@@ -89,10 +89,10 @@ def main():
     args = ap.parse_args()
     setup_logging()
 
-    config = args.config or (DEFAULT_CONFIG if os.path.exists(DEFAULT_CONFIG)
-                             else None)
-    cfg = load_config(config)
-    log.info("config: %s", config or "(built-in defaults)")
+    paths = config_paths(args.config)     # base ingest.toml + local config.toml
+    cfg = load_config(*paths)
+    loaded = [p for p in paths if os.path.exists(p)]
+    log.info("config: %s", " + ".join(loaded) or "(built-in defaults)")
     if args.interval_ms is not None:           # honour an explicit 0, too
         cfg["poll"]["interval_ms"] = args.interval_ms
 

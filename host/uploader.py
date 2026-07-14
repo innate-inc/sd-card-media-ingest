@@ -33,13 +33,12 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ingest_config import human_bytes, load_config, setup_logging
+from ingest_config import config_paths, human_bytes, load_config, setup_logging
 from ingest_copier import (manifest_name, read_metadata, read_uploaded,
                            write_uploaded)
 
 log = logging.getLogger("uploader")
 
-DEFAULT_CONFIG = "ingest.toml"   # in the working dir (project dir), not /etc
 
 
 def ready_dirs(base):
@@ -100,16 +99,15 @@ def upload_dir(d, base, remote_base, algo):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", help="TOML config (default: ./ingest.toml)")
+    ap.add_argument("--config", help="one TOML config, replacing the default "
+                    "./ingest.toml + ./config.toml layering")
     ap.add_argument("--once", action="store_true", help="one sweep, then exit")
     ap.add_argument("--interval", type=float, default=60,
                     help="seconds between sweeps (loop mode)")
     args = ap.parse_args()
     setup_logging()
 
-    config = args.config or (DEFAULT_CONFIG if os.path.exists(DEFAULT_CONFIG)
-                             else None)
-    cfg = load_config(config)
+    cfg = load_config(*config_paths(args.config))   # ingest.toml + config.toml
     base = cfg["dest"]["base"]
     algo = cfg["hash"]["algo"]
     remote_base = cfg.get("remote", {}).get("base", "")

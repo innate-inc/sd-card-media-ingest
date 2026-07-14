@@ -64,13 +64,15 @@ cmake -S device -B build -DLVGL_DIR=... && cmake --build build   # build fw by h
 # 1. One-time cloud remote for the uploader (skip if you only back up locally):
 nix run .#rclone -- config                # make a remote "b2" -> ./rclone.conf
 
-# 2. Edit ./ingest.toml — the things you must set:
+# 2. Put THIS box's settings in ./config.toml — it's gitignored and layered on
+#    top of the tracked ingest.toml, so `git pull` never conflicts with your
+#    local edits. Only override what differs from the defaults, e.g.:
 #      [dest]   base = "/media/.../ingest/"   # where copies land
 #      [remote] base = "b2:my-bucket/ingest"  # rclone dest ("" = local only)
 #      [hub]    vid/pid = the USB hub your readers plug into (`lsusb`; default
 #               is the Terminus 1a40:0101). Every drive on that hub is a source.
-#    Leave [wipe] enabled = false until you trust it (dry-run logging).
-$EDITOR ingest.toml
+#      [wipe]   enabled = true                # once you trust it (default false)
+$EDITOR config.toml
 
 # Check discovery: list what's plugged into the hub right now (read-only).
 nix run .#slots        # never copies; a diagnostic for the [hub] match. e.g.:
@@ -171,19 +173,13 @@ repo at a stable path, since the units point at it.
 
 The **innate-sd-ingester-http** service (installed by `.#install-service`) runs
 `rclone serve http` — a **read-only** web listing (browse + download, no delete)
-of whatever `[http] target` in `ingest.toml` points at, served on `[http] addr`
-(default `:8080`, i.e. `http://<box>:8080`). `target` defaults to the local
-dest; set it to `""` to leave the service idle.
+on `[http] addr` (default `:8080`, i.e. `http://<box>:8080`).
 
-To see **local + cloud in one view**, make a `combine` remote and point
-`target` at it:
-
-```bash
-nix run .#rclone -- config create both combine \
-    upstreams "local=/media/.../ingest remote=b2:my-bucket/ingest"
-# then set  [http] target = "both:"  in ingest.toml, and:
-sudo systemctl restart innate-sd-ingester-http
-```
+By default (`[http] target = ""`) it shows **local + cloud in one view** — it
+auto-builds an rclone `combine` of the local `[dest] base` and the cloud
+`[remote] base` (as `local/` and `cloud/`), no setup needed. If no remote is
+configured it just serves the local dest. Set `[http] target` to a specific path
+or remote to override.
 
 Run it by hand with `nix run .#http` (append `-- --user U --pass P` for basic
 auth). Keep it on your LAN, not the public internet. For an admin (read-write)

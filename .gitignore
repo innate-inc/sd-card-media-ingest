@@ -5,6 +5,10 @@ result-*
 # Secrets: rclone remote config stored in the project dir (.#store-rclone-config)
 rclone.conf
 
+# Local, per-box config overrides (layered over the tracked ingest.toml) so a
+# git pull never conflicts with machine-specific settings.
+config.toml
+
 # CMake / build artifacts
 build/
 *.uf2

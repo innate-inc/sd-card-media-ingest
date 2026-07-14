@@ -13,19 +13,16 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ingest_config import human_bytes, load_config
+from ingest_config import config_paths, human_bytes, load_config
 from ingest_discovery import HubDiscovery, UNKNOWN
-
-DEFAULT_CONFIG = "ingest.toml"
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", help="TOML config (default: ./ingest.toml)")
+    ap.add_argument("--config", help="one TOML config, replacing the default "
+                    "./ingest.toml + ./config.toml layering")
     args = ap.parse_args()
-    config = args.config or (DEFAULT_CONFIG if os.path.exists(DEFAULT_CONFIG)
-                             else None)
-    cfg = load_config(config)
+    cfg = load_config(*config_paths(args.config))   # ingest.toml + config.toml
 
     disco = HubDiscovery(cfg["hub"])
     probed = disco.slots()

@@ -55,11 +55,9 @@ enabled = false
 base = ""
 
 [http]
-# The rclone-http service serves a read-only web listing (browse + download) of
-# `target` on `addr`. target = a local path or an rclone remote. To show local
-# AND cloud in one view, make a "combine" remote and point target at it:
-#   nix run .#rclone -- config create both combine \
-#       upstreams "local=/media/.../ingest remote=b2:my-bucket/ingest"
-#   target = "both:"
-target = "/media/jetson1/jetson_backup/ingest/"   # what to serve ("" = disabled)
-addr   = ":8080"                                  # http://<box>:8080 ; keep it on your LAN
+# The rclone-http service serves a read-only web listing (browse + download).
+# With target empty (the default) it AUTO-serves both the local [dest] base and
+# the cloud [remote] base in one view (local/ + cloud/) when a remote is set,
+# else just the local dest. Set target to override with a specific path/remote.
+target = ""
+addr   = ":8080"    # http://<box>:8080 ; keep it on your LAN, not the internet
