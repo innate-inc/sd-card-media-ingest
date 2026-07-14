@@ -479,7 +479,7 @@ static void make_column(int i) {
     lv_obj_t *name = lv_label_create(scr);
     lv_obj_set_width(name, COL_W - 4);
     lv_obj_set_pos(name, x0 + 2, TOP_Y + 4);
-    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);   /* wrap, don't ellipsize */
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(name, C_TEXT, 0);
     lv_obj_set_style_text_font(name, &lv_font_montserrat_12, 0);
