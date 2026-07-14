@@ -144,6 +144,18 @@
               exec rclone "$@"
             '';
           };
+
+          # Read-only web file browser over a remote/path (local or cloud), e.g.
+          # `nix run .#browse -- both: --addr :8080`. Serves GET/HEAD only -- no
+          # delete. (Admin Web GUI is `nix run .#rclone -- rcd --rc-web-gui`.)
+          browse = pkgs.writeShellApplication {
+            name = "browse";
+            runtimeInputs = [ pkgs.rclone ];
+            text = ''
+              export RCLONE_CONFIG="''${RCLONE_CONFIG:-$PWD/rclone.conf}"
+              exec rclone serve http "$@"
+            '';
+          };
         in
         {
           flash = { type = "app"; program = "${flash}/bin/flash"; };
@@ -151,6 +163,7 @@
           uploader = { type = "app"; program = "${uploader}/bin/uploader"; };
           install-service = { type = "app"; program = "${install-service}/bin/install-service"; };
           rclone = { type = "app"; program = "${rclone}/bin/rclone"; };
+          browse = { type = "app"; program = "${browse}/bin/browse"; };
           sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
           default = self.apps.${system}.sim;
         });
