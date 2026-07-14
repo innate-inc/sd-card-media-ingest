@@ -38,6 +38,7 @@ class HubDiscovery:
     def __init__(self, path_prefix):
         self.prefix = path_prefix
         self.slot_ids = self._entries()   # fixed for the daemon's lifetime
+        self._cache = {}                  # ident -> resolved Card (held while present)
         if not self.slot_ids:
             print("warning: no block devices under hub prefix %r in %s"
                   % (self.prefix, self.BY_PATH), file=sys.stderr)
@@ -59,6 +60,8 @@ class HubDiscovery:
         return out
 
     def _probe(self, ident, dev):
+        # The only thing that changes tick-to-tick is presence, so read just the
+        # cheap sysfs size each poll and resolve the (stable) card identity once.
         node = os.path.basename(dev)
         try:
             with open("/sys/class/block/%s/size" % node) as fh:
@@ -66,11 +69,18 @@ class HubDiscovery:
         except (OSError, ValueError):
             return UNKNOWN                    # transient read error, not removal
         if sectors == 0:
-            return None                       # reader present, no media
+            self._cache.pop(ident, None)      # media gone; forget it
+            return None
+        cached = self._cache.get(ident)
+        if cached is not None:
+            return cached                     # identity is fixed while inserted
         part, uuid = self._partition(dev)
         mnt = self._mountpoint(part or dev)
         label = self._fslabel(part or dev) or (uuid or node)[:12]
-        return Card(ident, label, uuid or node, mnt, sectors * 512)
+        card = Card(ident, label, uuid or node, mnt, sectors * 512)
+        if mnt is not None:                   # only cache a card we can read;
+            self._cache[ident] = card         # keep re-resolving until it mounts
+        return card
 
     @staticmethod
     def _partition(dev):

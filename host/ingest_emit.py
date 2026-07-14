@@ -12,6 +12,10 @@ from ingest_config import as_bool, color
 from ingest_copier import (COPYING, EMPTY, ERROR, IDLE, PENDING, VERIFYING,
                            WIPING)
 
+# job state -> protocol status word (built once). EMPTY is handled in tick().
+_STATUS = {IDLE: "idle", COPYING: "active", VERIFYING: "active",
+           PENDING: "pending", WIPING: "active", ERROR: "error"}
+
 
 class Emitter:
     def __init__(self, out, seg_cfg):
@@ -25,20 +29,18 @@ class Emitter:
         self._last_warn = 0.0
 
     def emit(self, line):
-        try:
-            self.out.write(line + "\n")
-        except BrokenPipeError:
-            self._display_gone()
-        except OSError as e:
-            self._link_hiccup(e)
+        self._safe(lambda: self.out.write(line + "\n"))
 
     def flush(self):
+        self._safe(self.out.flush)
+
+    def _safe(self, fn):
         try:
-            self.out.flush()
+            fn()
         except BrokenPipeError:
-            self._display_gone()
+            self._display_gone()          # pipe reader gone -> exit quietly
         except OSError as e:
-            self._link_hiccup(e)
+            self._link_hiccup(e)          # serial glitch -> warn + skip frame
 
     @staticmethod
     def _display_gone():
@@ -90,14 +92,13 @@ class Emitter:
         cop = pm(job.copied_bytes - job.verified_bytes)
         unc = pm(job.total_bytes - job.copied_bytes)
         size_mb = cap // 1_000_000
-        status, label = {
-            IDLE:      ("idle", job.card.label),
-            COPYING:   ("active", job.card.label),
-            VERIFYING: ("active", job.card.label),
-            PENDING:   ("pending", job.card.label),
-            WIPING:    ("active", "WIPING"),
-            ERROR:     ("error", job.error or "ERROR"),
-        }.get(job.state, ("idle", job.card.label))
+        status = _STATUS.get(job.state, "idle")
+        if job.state == WIPING:
+            label = "WIPING"
+        elif job.state == ERROR:
+            label = job.error or "ERROR"
+        else:
+            label = job.card.label
         # eta is -1 (unknown): the device just shows the name/size label.
         return ("slot %d %d -1 %s %d %06x %d %06x %d %06x 0 0 %s"
                 % (i, size_mb, status, up, self.up, cop, self.cop,

@@ -25,17 +25,11 @@ import tempfile
 import threading
 import time
 
-from ingest_config import DEFAULTS, as_bool, color, load_config
-from ingest_copier import (Abort, CardJob, COPYING, EMPTY, ERROR, hash_file,
-                           IDLE, PENDING, VERIFYING, WIPING)
-from ingest_discovery import (Card, HubDiscovery, MockDiscovery, UNKNOWN)
+from ingest_config import as_bool, load_config
+from ingest_copier import CardJob, COPYING, IDLE, PENDING, VERIFYING, WIPING
+from ingest_discovery import HubDiscovery, MockDiscovery, UNKNOWN
 from ingest_emit import Emitter
 from ingest_link import SerialLink, confirm_reader, find_port
-
-__all__ = ["DEFAULTS", "load_config", "color", "as_bool", "Card", "UNKNOWN",
-           "HubDiscovery", "MockDiscovery", "CardJob", "Abort", "hash_file",
-           "Emitter", "IDLE", "COPYING", "VERIFYING", "PENDING", "WIPING",
-           "EMPTY", "ERROR"]
 
 
 def open_display(cfg, args):
@@ -54,6 +48,17 @@ def open_display(cfg, args):
             print("ingest: no serial device %s:%s; using stdout/stdin"
                   % (vid, pid), file=sys.stderr)
     return sys.stdin, sys.stdout
+
+
+def _auto_confirm(jobs, pending_since, after_s):
+    """[--dry-run demo only] confirm a slot S seconds after it goes pending."""
+    now = time.monotonic()
+    for i, job in jobs.items():
+        if job.state == PENDING:
+            if now - pending_since.setdefault(i, now) >= after_s:
+                job.request_wipe()
+        else:
+            pending_since.pop(i, None)
 
 
 def main():
@@ -123,9 +128,8 @@ def main():
             if card is not None and job is None:
                 if card.mountpoint is None:
                     continue                   # present but unreadable; skip
-                job = CardJob(card, cfg, wipe_armed=wipe_armed)
-                if args.dry_run:
-                    job.throttle_bps = 1_500_000  # visible progress in the sim
+                job = CardJob(card, cfg, wipe_armed=wipe_armed,
+                              throttle_bps=1_500_000 if args.dry_run else 0)
                 jobs[i] = job
                 job.start()
 
@@ -141,17 +145,10 @@ def main():
         except queue.Empty:
             pass
         if args.dry_run and args.auto_confirm:
-            now = time.monotonic()
-            for i, job in jobs.items():
-                if job.state == PENDING:
-                    if now - pending_since.setdefault(i, now) >= args.auto_confirm:
-                        job.request_wipe()
-                else:
-                    pending_since.pop(i, None)
+            _auto_confirm(jobs, pending_since, args.auto_confirm)
 
-        # One display frame. Absent slots keep their column.
-        n = max(len(slots), (max(jobs) + 1) if jobs else 0)
-        emitter.tick([jobs.get(i) for i in range(n)])
+        # One display frame. Absent slots keep their column (slot count is fixed).
+        emitter.tick([jobs.get(i) for i in range(len(slots))])
 
         tick += 1
         if args.ticks and tick >= args.ticks:

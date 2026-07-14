@@ -39,16 +39,10 @@ class SerialLink:
         self.s.flush()
 
     def __iter__(self):
-        buf = bytearray()
         while True:
-            b = self.s.read(1)               # blocks (timeout=None)
-            if not b:
-                continue
-            if b == b"\n":
-                yield buf.decode("ascii", "replace")
-                buf.clear()
-            else:
-                buf += b
+            line = self.s.readline()         # buffered read up to '\n' (blocks)
+            if line:
+                yield line.decode("ascii", "replace")
 
 
 def confirm_reader(stream, q):

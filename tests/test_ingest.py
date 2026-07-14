@@ -21,8 +21,10 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "host"))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import ingest
+from ingest_config import DEFAULTS, as_bool, color, load_config
+from ingest_copier import Abort, CardJob, COPYING, EMPTY, ERROR, PENDING
+from ingest_discovery import Card
+from ingest_emit import Emitter
 
 # What app/proto.c's sscanf accepts for a slot line (4 pairs mandatory).
 SLOT_RE = re.compile(
@@ -43,7 +45,7 @@ class JobTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.src = os.path.join(self.tmp.name, "card")
-        self.cfg = ingest.load_config(None)
+        self.cfg = load_config(None)
         self.cfg["dest"]["base"] = os.path.join(self.tmp.name, "dest")
         self.files = {
             "DCIM/100/IMG_0001.JPG": b"a" * 3000,
@@ -56,13 +58,13 @@ class JobTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def job(self, **kw):
-        card = ingest.Card("mock-0", "TESTCARD", "UUID-01", self.src, 20000)
-        return ingest.CardJob(card, self.cfg, **kw)
+        card = Card("mock-0", "TESTCARD", "UUID-01", self.src, 20000)
+        return CardJob(card, self.cfg, **kw)
 
     def test_full_pipeline_to_pending(self):
         j = self.job()
         j.run()
-        self.assertEqual(j.state, ingest.PENDING)
+        self.assertEqual(j.state, PENDING)
         self.assertEqual(j.total_bytes, 8005)
         self.assertEqual(j.copied_bytes, 8005)
         self.assertEqual(j.verified_bytes, 8005)
@@ -103,8 +105,8 @@ class JobTest(unittest.TestCase):
         j.copy_all()
         with open(os.path.join(j.dest, "note.txt"), "wb") as fh:
             fh.write(b"HELLO")             # corrupt the copy before verification
-        self.assertRaises(ingest.Abort, j.verify_all)
-        self.assertEqual(j.state, ingest.ERROR)
+        self.assertRaises(Abort, j.verify_all)
+        self.assertEqual(j.state, ERROR)
         self.assertEqual(j.error, "HASH FAIL")
         self.assertFalse(os.path.exists(j.manifest_path()))  # no manifest
         for rel in self.files:             # source untouched
@@ -119,15 +121,15 @@ class JobTest(unittest.TestCase):
     def test_confirm_refused_unless_pending(self):
         j = self.job()
         j.scan()
-        j.state = ingest.COPYING
+        j.state = COPYING
         self.assertFalse(j.request_wipe())
-        self.assertEqual(j.state, ingest.COPYING)
+        self.assertEqual(j.state, COPYING)
 
     def test_dry_run_wipe_deletes_nothing(self):
         j = self.job()                     # wipe_armed defaults to False
         j.run()
         self.assertTrue(j.request_wipe())
-        self._await_state(j, ingest.EMPTY)
+        self._await_state(j, EMPTY)
         for rel in self.files:
             self.assertTrue(os.path.exists(os.path.join(self.src, rel)),
                             "dry-run wipe must not delete %s" % rel)
@@ -139,10 +141,24 @@ class JobTest(unittest.TestCase):
         with open(extra, "wb") as fh:
             fh.write(b"late")
         self.assertTrue(j.request_wipe())
-        self._await_state(j, ingest.EMPTY)
+        self._await_state(j, EMPTY)
         for rel in self.files:
             self.assertFalse(os.path.exists(os.path.join(self.src, rel)))
         self.assertTrue(os.path.exists(extra), "unscanned file must survive")
+
+    def test_armed_wipe_refuses_source_changed_after_scan(self):
+        j = self.job(wipe_armed=True)
+        j.run()
+        self.assertEqual(j.state, PENDING)
+        victim = os.path.join(self.src, "DCIM/100/IMG_0001.JPG")  # sorts first
+        with open(victim, "wb") as fh:
+            fh.write(b"z" * 3000)          # same length, different bytes
+        os.utime(victim, ns=(0, 0))        # ...and a different mtime
+        self.assertTrue(j.request_wipe())
+        self._await_state(j, ERROR)
+        self.assertEqual(j.error, "SRC CHANGED")
+        for rel in self.files:             # nothing deleted
+            self.assertTrue(os.path.exists(os.path.join(self.src, rel)))
 
     def _await_state(self, job, state, timeout=5.0):
         deadline = time.monotonic() + timeout
@@ -155,27 +171,27 @@ class JobTest(unittest.TestCase):
 class ConfigTest(unittest.TestCase):
     def test_as_bool_rejects_quoted_false(self):
         for v in ("false", "0", "no", "off", "  False  ", ""):
-            self.assertFalse(ingest.as_bool(v), "%r must be False" % v)
+            self.assertFalse(as_bool(v), "%r must be False" % v)
         for v in ("true", "1", "yes", "on", True):
-            self.assertTrue(ingest.as_bool(v), "%r must be True" % v)
-        self.assertFalse(ingest.as_bool(False))
+            self.assertTrue(as_bool(v), "%r must be True" % v)
+        self.assertFalse(as_bool(False))
 
     def test_color_accepts_int_and_str(self):
-        self.assertEqual(ingest.color("#22C35E"), 0x22C35E)
-        self.assertEqual(ingest.color("22c35e"), 0x22C35E)
-        self.assertEqual(ingest.color(0x22C35E), 0x22C35E)
+        self.assertEqual(color("#22C35E"), 0x22C35E)
+        self.assertEqual(color("22c35e"), 0x22C35E)
+        self.assertEqual(color(0x22C35E), 0x22C35E)
 
 
 class EmitterTest(unittest.TestCase):
     def test_lines_fit_the_device_grammar(self):
         out = io.StringIO()
-        em = ingest.Emitter(out, ingest.DEFAULTS["segments"])
+        em = Emitter(out, DEFAULTS["segments"])
         em.preamble()
 
-        card = ingest.Card("mock-0", "A-VERY-LONG-CARD-LABEL-XYZ", "U", "/x",
+        card = Card("mock-0", "A-VERY-LONG-CARD-LABEL-XYZ", "U", "/x",
                            10_000_000_000)
-        job = ingest.CardJob.__new__(ingest.CardJob)   # no filesystem needed
-        job.card, job.state, job.error = card, ingest.COPYING, ""
+        job = CardJob.__new__(CardJob)   # no filesystem needed
+        job.card, job.state, job.error = card, COPYING, ""
         job.dest = "/dest/U"
         job.total_bytes = 9_000_000_000
         job.copied_bytes = 5_000_000_000
