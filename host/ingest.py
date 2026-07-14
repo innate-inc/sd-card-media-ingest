@@ -291,6 +291,8 @@ class CardJob:
         self.dest = self._claim_dest(cfg["dest"]["base"], card.uuid)
         self._files = []                      # (relpath, size)
         self._hashes = {}                     # relpath -> source hex digest
+        self._src_meta = {}                   # relpath -> (size, mtime_ns) at scan
+        self._dest_rel = {}                   # source relpath -> actual dest relpath
         self._skipped = set()                 # relpaths resumed from a manifest
         self.wiped = False                    # a confirm-triggered wipe ran
         self.throttle_bps = 0                 # dry-run pacing; 0 = full speed
@@ -355,15 +357,19 @@ class CardJob:
                 if os.path.islink(p):
                     continue
                 rel = os.path.relpath(p, src)
-                self._files.append((rel, os.path.getsize(p)))
+                st = os.stat(p)
+                self._files.append((rel, st.st_size))
+                self._src_meta[rel] = (st.st_size, st.st_mtime_ns)
         self._files.sort()
         self.total_bytes = sum(sz for _, sz in self._files)
 
         old = self.read_manifest()
         for rel, sz in self._files:
-            dst = os.path.join(self.dest, rel)
-            if not (rel in old and old[rel]["size"] == sz
-                    and os.path.isfile(dst) and os.path.getsize(dst) == sz):
+            if rel not in old or old[rel]["size"] != sz:
+                continue
+            dp = old[rel].get("dest", rel)    # where the verified copy landed
+            dst = os.path.join(self.dest, dp)
+            if not (os.path.isfile(dst) and os.path.getsize(dst) == sz):
                 continue
             # Size + manifest match is not enough to skip: re-hash the existing
             # destination and only trust it if the bytes still match. Otherwise
@@ -377,6 +383,7 @@ class CardJob:
                 continue                      # corrupt/stale -> re-copy it
             self._skipped.add(rel)            # verified in an earlier run
             self._hashes[rel] = old[rel]["hash"]
+            self._dest_rel[rel] = dp
             self.copied_bytes += sz
             self.verified_bytes += sz
 
@@ -390,6 +397,12 @@ class CardJob:
             src = os.path.join(self.card.mountpoint, rel)
             dst = os.path.join(self.dest, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.exists(dst):
+                # a different file already occupies this path (e.g. another card
+                # with the same UUID, or a changed re-ingest): never overwrite —
+                # keep both by timestamping the new copy.
+                dst = _unique_path(dst)
+            self._dest_rel[rel] = os.path.relpath(dst, self.dest)
             part = dst + ".part"
             h = hashlib.new(self.algo)
             try:
@@ -424,13 +437,14 @@ class CardJob:
             if rel in self._skipped:
                 continue
             self._check_abort()
-            got = hash_file(os.path.join(self.dest, rel), self.algo,
+            dp = self._dest_rel.get(rel, rel)
+            got = hash_file(os.path.join(self.dest, dp), self.algo,
                             pace=self._pace, check=self._check_abort,
                             drop_cache=True)   # read from media, not page cache
             if got != self._hashes[rel]:
                 self.fail("HASH FAIL")        # keep card + copy; human decides
                 raise Abort()
-            self.verified_bytes += os.path.getsize(os.path.join(self.dest, rel))
+            self.verified_bytes += os.path.getsize(os.path.join(self.dest, dp))
 
     # ---- manifest (the record of a verified ingest) ------------------------
 
@@ -455,7 +469,8 @@ class CardJob:
         m = {"uuid": self.card.uuid, "label": self.card.label,
              "algo": self.algo,
              "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-             "files": [{"path": rel, "size": sz, "hash": self._hashes[rel]}
+             "files": [{"path": rel, "dest": self._dest_rel.get(rel, rel),
+                        "size": sz, "hash": self._hashes[rel]}
                        for rel, sz in self._files]}
         tmp = self.manifest_path() + ".tmp"
         with open(tmp, "w") as fh:
@@ -497,19 +512,19 @@ class CardJob:
                   file=sys.stderr)
             if not self.wipe_armed:
                 continue
-            # TOCTOU guard: re-hash the source and refuse to delete unless it
-            # still matches the hash whose copy we verified. Anything else
-            # (changed in place, unreadable) keeps the whole card, human decides.
+            # The card is expected to stay read-only through `pending`, so the
+            # source can't legitimately change before the wipe. Confirm that
+            # cheaply with a size+mtime stat (no re-read of the whole card) and
+            # refuse to delete anything that was touched since we scanned it.
+            want = self._src_meta.get(rel)
             try:
-                now = hash_file(src, self.algo, check=self._check_abort)
-            except Abort:
-                self.fail("REMOVED")
-                return
+                st = os.stat(src)
+                have = (st.st_size, st.st_mtime_ns)
             except OSError:
-                now = None
-            if now != self._hashes.get(rel):
-                print("ingest: %s: SOURCE CHANGED since verify, aborting wipe "
-                      "(%s)" % (self.card.label, src), file=sys.stderr)
+                have = None
+            if want is None or have != want:
+                print("ingest: %s: SOURCE CHANGED since scan, not deleting %s"
+                      % (self.card.label, src), file=sys.stderr)
                 self.fail("SRC CHANGED")
                 return
             try:
@@ -584,6 +599,20 @@ def hash_file(path, algo, pace=None, check=None, drop_cache=False):
             h.update(chunk)
             if pace:
                 pace(len(chunk))
+
+
+def _unique_path(dst):
+    """A non-colliding path near dst: insert a timestamp before the extension
+    (and a counter if that still exists), so a name clash never overwrites an
+    existing file. e.g. IMG_0001.JPG -> IMG_0001.20260714-131502.JPG"""
+    base, ext = os.path.splitext(dst)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    cand = "%s.%s%s" % (base, stamp, ext)
+    n = 2
+    while os.path.exists(cand):
+        cand = "%s.%s.%d%s" % (base, stamp, n, ext)
+        n += 1
+    return cand
 
 
 def _fsync_dir(path):

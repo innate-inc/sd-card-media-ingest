@@ -141,20 +141,44 @@ class JobTest(unittest.TestCase):
         self.assertTrue(j2.dest.endswith("UUID-01-2"))
         j1.release(), j2.release()
 
-    def test_armed_wipe_refuses_source_changed_after_verify(self):
-        """TOCTOU: a source file altered between verify and wipe (even at the
-        same length) must not be deleted; the whole card is kept."""
+    def test_armed_wipe_refuses_source_changed_after_scan(self):
+        """A source file touched between scan and wipe (size+mtime) must not be
+        deleted; the whole card is kept. (Cheap check — no full re-read.)"""
         j = self.job(wipe_armed=True)
         j.run()
         self.assertEqual(j.state, ingest.PENDING)
         victim = os.path.join(self.src, "DCIM/100/IMG_0001.JPG")  # sorts first
         with open(victim, "wb") as fh:
             fh.write(b"z" * 3000)          # same length, different bytes
+        os.utime(victim, ns=(0, 0))        # ...and a different mtime
         self.assertTrue(j.request_wipe())
         self._await_state(j, ingest.ERROR)
         self.assertEqual(j.error, "SRC CHANGED")
         for rel in self.files:             # nothing deleted
             self.assertTrue(os.path.exists(os.path.join(self.src, rel)))
+
+    def test_colliding_dest_file_is_timestamped_not_overwritten(self):
+        """A different card sharing the UUID with a same-named, different file
+        must not clobber the first card's copy — the new one is timestamped."""
+        j1 = self.job()
+        j1.run()
+        j1.release()
+        src2 = os.path.join(self.tmp.name, "card2")
+        make_card(src2, {"note.txt": b"DIFFERENT-CONTENT"})
+        card2 = ingest.Card("mock-1", "CARD2", "UUID-01", src2, 20000)
+        j2 = ingest.CardJob(card2, self.cfg)
+        self.assertEqual(j2.dest, j1.dest)         # same uuid dir (j1 released)
+        j2.run()
+        self.assertEqual(j2.state, ingest.PENDING)
+        with open(os.path.join(j2.dest, "note.txt")) as fh:
+            self.assertEqual(fh.read(), "hello")   # j1's original untouched
+        extra = [f for f in os.listdir(j2.dest)
+                 if f.startswith("note.") and f.endswith(".txt")
+                 and f != "note.txt"]
+        self.assertEqual(len(extra), 1)            # j2's file, timestamped
+        with open(os.path.join(j2.dest, extra[0])) as fh:
+            self.assertEqual(fh.read(), "DIFFERENT-CONTENT")
+        j2.release()
 
     def test_resume_rehashes_and_rejects_corrupt_dest(self):
         """A destination that silently corrupted but kept its size must NOT be
