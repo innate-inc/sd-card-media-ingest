@@ -61,6 +61,10 @@ class Emitter:
             log.warning("display write error (skipping frame): %s", e)
 
     def preamble(self):
+        # also called on a display reconnect: the device is blank again, so drop
+        # the per-column caches to force a full re-send on the next tick.
+        self._paths.clear()
+        self._drawn.clear()
         self.emit("clear")
         self.emit("bg %06x" % self.bg)
         self.emit("numbers %d" % self.numbers)

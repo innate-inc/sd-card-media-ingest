@@ -31,7 +31,7 @@ from ingest_copier import (CardJob, COPYING, IDLE, PENDING, read_uploaded,
                            VERIFYING, WIPING)
 from ingest_discovery import HubDiscovery, MockDiscovery, UNKNOWN
 from ingest_emit import Emitter
-from ingest_link import SerialLink, confirm_reader, find_port
+from ingest_link import confirm_reader, ReconnectingSerial
 
 log = logging.getLogger("ingest")
 
@@ -39,19 +39,17 @@ DEFAULT_CONFIG = "ingest.toml"   # in the working dir (project dir), not /etc
 
 
 def open_display(cfg, args):
-    """(rx, tx) for the confirm channel + display. A serial device found by
-    VID/PID owns both directions; otherwise stdin/stdout (pipe mode)."""
+    """Return (read_confirms, out): read_confirms(queue) is the confirm-reader
+    thread body; out is the emitter's line sink. A serial display (found by
+    VID/PID) transparently reconnects across unplugs; otherwise stdin/stdout
+    (pipe / dry-run mode)."""
     if not args.dry_run:
         vid = args.vid if args.vid is not None else cfg["serial"].get("vid", "")
         pid = args.pid if args.pid is not None else cfg["serial"].get("pid", "")
         if vid or pid:
-            port = find_port(vid, pid)
-            if port:
-                log.info("device on %s (%s:%s)", port, vid, pid)
-                link = SerialLink(port)
-                return link, link
-            log.warning("no serial device %s:%s; using stdout/stdin", vid, pid)
-    return sys.stdin, sys.stdout
+            link = ReconnectingSerial(vid, pid)
+            return link.read_confirms, link
+    return (lambda q: confirm_reader(sys.stdin, q)), sys.stdout
 
 
 def _free_col(used):
@@ -118,13 +116,15 @@ def main():
     log.info("dest base: %s ; %d reader slot(s)",
              cfg["dest"]["base"], len(disco.slots()))
 
-    rx, tx = open_display(cfg, args)
+    read_confirms, tx = open_display(cfg, args)
     emitter = Emitter(tx, cfg["segments"])
     confirms = queue.Queue()
-    threading.Thread(target=confirm_reader, args=(rx, confirms),
-                     daemon=True).start()
+    threading.Thread(target=read_confirms, args=(confirms,), daemon=True).start()
 
     emitter.preamble()
+    # A reconnecting serial display comes up blank; re-send the preamble (bg,
+    # legend, numbers) whenever it (re)connects. Pipe mode has no such method.
+    display_reconnected = getattr(tx, "take_reconnected", None)
     # The display is a list of the cards plugged in, in insertion order: each
     # gets the lowest free display column when it appears and keeps it (so its
     # confirm number never shifts under it) until removal, which frees it again.
@@ -136,6 +136,9 @@ def main():
     tick = 0
 
     while True:
+        if display_reconnected and display_reconnected():
+            emitter.preamble()
+
         slots = disco.slots()
 
         # Reconcile discovery with running jobs.
