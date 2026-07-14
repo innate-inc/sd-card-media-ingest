@@ -101,7 +101,10 @@ def main():
         cfg["dest"]["base"] = args.dest or os.path.join(root, "dest")
         log.info("dry run: fake cards + dest under %s", root)
     else:
-        disco = HubDiscovery(args.hub_prefix or cfg["hub"]["path_prefix"])
+        hub = dict(cfg["hub"])
+        if args.hub_prefix:                    # explicit prefix overrides vid/pid
+            hub["path_prefix"], hub["vid"] = args.hub_prefix, ""
+        disco = HubDiscovery(hub)
         cfg["dest"]["base"] = args.dest or cfg["dest"]["base"]
     log.info("dest base: %s ; %d reader slot(s)",
              cfg["dest"]["base"], len(disco.slots()))

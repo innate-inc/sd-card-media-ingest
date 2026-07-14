@@ -25,7 +25,9 @@ def human_bytes(n):
 
 DEFAULTS = {
     "serial": {"vid": "2e8a", "pid": ""},   # "" vid+pid = stdout/stdin pipe mode
-    "hub": {"path_prefix": ""},             # /dev/disk/by-path prefix of the hub
+    # Readers are found as the drives plugged into this hub (by USB vid:pid);
+    # picks up SD readers + an SSD on the hub, not the nvme or the display board.
+    "hub": {"vid": "1a40", "pid": "0101", "path_prefix": ""},  # Terminus hub
     "dest": {"base": "/media/jetson1/jetson_backup/ingest/"},  # base/<uuid>/<date>/
     "hash": {"algo": "sha1"},               # the common hash across Drive + B2
     "segments": {

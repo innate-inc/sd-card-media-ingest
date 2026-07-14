@@ -11,10 +11,13 @@ vid = "2e8a"         # Raspberry Pi / RP2350
 pid = ""             # "" = match any product id under that vendor
 
 [hub]
-# /dev/disk/by-path prefix of the reader hub. Only block devices under this
-# prefix are ever touched -- system disks and the ingest SSD are invisible.
-# Find yours with: ls -l /dev/disk/by-path | grep usb
-path_prefix = "pci-0000:00:14.0-usb-0:2"
+# Readers = the drives plugged into this USB hub, matched by the hub's vid:pid
+# (find it with `lsusb`). Picks up SD readers AND an SSD on the hub; the internal
+# nvme and the display board are never matched. Set path_prefix instead (a
+# /dev/disk/by-path prefix) if you'd rather pin one exact physical port.
+vid = "1a40"                   # Terminus Technology hub
+pid = "0101"
+path_prefix = ""
 
 [dest]
 base = "/media/jetson1/jetson_backup/ingest/"   # files land in base/<uuid>/<date>/

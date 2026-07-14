@@ -37,21 +37,23 @@ class HubDiscovery:
 
     BY_PATH = "/dev/disk/by-path"
 
-    def __init__(self, path_prefix):
-        self.prefix = path_prefix
-        self.slot_ids = self._entries()   # fixed for the daemon's lifetime
+    def __init__(self, hub_cfg):
+        # Prefer matching readers by their USB vid:pid (robust to which port the
+        # hub is in, and can't pick up the target SSD or the display board); fall
+        # back to a /dev/disk/by-path prefix if one is configured.
         self._cache = {}                  # ident -> resolved Card (held while present)
-        if not self.slot_ids:
-            log.warning("no block devices under hub prefix %r in %s",
-                        self.prefix, self.BY_PATH)
-
-    def _entries(self):
-        try:
-            names = os.listdir(self.BY_PATH)
-        except FileNotFoundError:
-            return []
-        return sorted(n for n in names
-                      if n.startswith(self.prefix) and "-part" not in n)
+        vid = (hub_cfg.get("vid") or "").lower()
+        pid = (hub_cfg.get("pid") or "").lower()
+        prefix = hub_cfg.get("path_prefix") or ""
+        if vid:
+            self.slot_ids = _slots_behind_hub(vid, pid)
+            how = "behind hub %s:%s" % (vid, pid or "*")
+        else:
+            self.slot_ids = _slots_by_prefix(prefix)
+            how = "by-path prefix %r" % prefix
+        self.slot_ids = sorted(self.slot_ids)   # by-path order = physical order
+        (log.info if self.slot_ids else log.warning)(
+            "discovery: %d reader slot(s) via %s", len(self.slot_ids), how)
 
     def slots(self):
         """-> list of Card / None / UNKNOWN, one per fixed slot, in order."""
@@ -109,6 +111,72 @@ class HubDiscovery:
         except OSError:
             pass
         return None                           # present but not mounted
+
+
+def _slots_by_prefix(prefix):
+    """by-path idents (whole disks) starting with `prefix`."""
+    try:
+        names = os.listdir(HubDiscovery.BY_PATH)
+    except OSError:
+        return []
+    return [n for n in names if n.startswith(prefix) and "-part" not in n]
+
+
+def _slots_behind_hub(vid, pid):
+    """by-path idents of every whole-disk block device plugged into a hub whose
+    USB vid[:pid] matches -- card-reader LUNs, an SSD, anything on the hub."""
+    out = []
+    try:
+        blocks = os.listdir("/sys/block")
+    except OSError:
+        return []
+    for dev in blocks:
+        if _behind_hub("/sys/block/" + dev, vid, pid):
+            bp = _bypath_of(dev)
+            if bp:
+                out.append(bp)
+    return out
+
+
+def _behind_hub(sysblock, vid, pid):
+    """True if any USB ancestor of the block device matches vid[:pid] -- i.e. the
+    disk is plugged into that hub (so it excludes the internal nvme and anything
+    on a different controller)."""
+    try:
+        p = os.path.realpath(os.path.join(sysblock, "device"))
+    except OSError:
+        return False
+    for _ in range(16):                   # walk up the sysfs USB topology
+        vf = os.path.join(p, "idVendor")
+        if os.path.exists(vf):
+            try:
+                v = open(vf).read().strip().lower()
+                pd = open(os.path.join(p, "idProduct")).read().strip().lower()
+                if v == vid and (not pid or pd == pid):
+                    return True
+            except OSError:
+                pass
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    return False
+
+
+def _bypath_of(dev):
+    """The stable /dev/disk/by-path name for a whole disk (the plain `-usb-`
+    one, preferred over usbv2/usbv3 duplicates)."""
+    try:
+        real = os.path.realpath("/dev/" + dev)
+        names = sorted(os.listdir(HubDiscovery.BY_PATH))
+    except OSError:
+        return None
+    cands = [n for n in names if "-part" not in n and "-usb" in n
+             and os.path.realpath(os.path.join(HubDiscovery.BY_PATH, n)) == real]
+    for n in cands:
+        if "-usb-" in n:                  # plain USB link, not usbv2/usbv3
+            return n
+    return cands[0] if cands else None
 
 
 def _reverse_symlink(dirpath, dev):
