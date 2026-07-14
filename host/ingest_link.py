@@ -124,12 +124,15 @@ class ReconnectingSerial:
             self._reconnected = False
             return r
 
+    # Any failure talking to the tty (OSError, or pyserial quirks like a
+    # TypeError from a half-open fd on unplug) is treated as a disconnect, never
+    # propagated: display I/O must not crash the daemon or kill the reader.
     def write(self, data):
         link = self._ensure()
         if link is not None:
             try:
                 link.write(data)
-            except OSError as e:
+            except Exception as e:
                 self._drop(e)
 
     def flush(self):
@@ -137,7 +140,7 @@ class ReconnectingSerial:
         if link is not None:
             try:
                 link.flush()
-            except OSError as e:
+            except Exception as e:
                 self._drop(e)
 
     def read_confirms(self, q):
@@ -152,7 +155,7 @@ class ReconnectingSerial:
                     m = re.match(r"\s*confirm\s+(\d+)\s*$", raw)
                     if m:
                         q.put(int(m.group(1)))
-            except OSError as e:
+            except Exception as e:
                 self._drop(e)
 
 

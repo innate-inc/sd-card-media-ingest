@@ -88,10 +88,12 @@ class HubDiscovery:
         if cached is not None:
             return cached                     # identity is fixed while inserted
         part, uuid = self._partition(dev)
+        uuid = _blkid(part or dev, "UUID") or uuid    # direct read beats the udev race
         mnt = self._mountpoint(part or dev)
         if mnt is None and self.mount:        # headless: mount it ourselves
             mnt = self._automount(part or dev, ident)
-        label = self._fslabel(part or dev) or (uuid or node)[:12]
+        label = (_blkid(part or dev, "LABEL") or self._fslabel(part or dev)
+                 or (uuid or node)[:12])
         card = Card(ident, label, uuid or node, mnt, sectors * 512)
         if mnt is not None:                   # only cache a card we can read;
             self._cache[ident] = card         # keep re-resolving until it mounts
@@ -165,6 +167,19 @@ class HubDiscovery:
         except OSError:
             pass
         log.info("unmounted %s", mp)
+
+
+def _blkid(part, tag):
+    """Read a filesystem tag (UUID / LABEL) straight from the device with
+    `blkid -p` -- unlike the /dev/disk/by-* symlinks, it doesn't wait for udev,
+    which our instant auto-mount can outrun (leaving uuid falling back to the
+    sdX node). Needs root to read the raw device; returns None if unavailable."""
+    try:
+        out = subprocess.run(["blkid", "-p", "-s", tag, "-o", "value", part],
+                             capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.decode("utf-8", "replace").strip() or None
 
 
 def _slots_by_prefix(prefix):
