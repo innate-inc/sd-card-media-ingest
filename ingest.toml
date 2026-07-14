@@ -38,7 +38,8 @@ interval_ms = 500              # discovery + display tick; also the hb period
 
 [wipe]
 # SAFETY: with false (the default), a confirmed wipe only *logs* what it would
-# delete. Real deletion requires this AND the env var INGEST_ENABLE_WIPE=1.
+# delete. Set true to actually erase cards after a confirm. That's the only
+# switch -- the ingest daemon logs "wipe ARMED" loudly at startup when it's on.
 enabled = false
 
 [remote]

@@ -26,15 +26,20 @@ remote + credentials come from rclone's own config (`rclone config`); this only
 needs the destination base in [remote].
 """
 import argparse
+import logging
 import os
 import subprocess
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ingest_config import load_config
+from ingest_config import human_bytes, load_config, setup_logging
 from ingest_copier import (manifest_name, read_metadata, read_uploaded,
                            write_uploaded)
+
+log = logging.getLogger("uploader")
+
+DEFAULT_CONFIG = "ingest.toml"   # in the working dir (project dir), not /etc
 
 
 def ready_dirs(base):
@@ -62,52 +67,60 @@ def _rclone(args, stdout=subprocess.DEVNULL):
 
 def upload_dir(d, base, remote_base, algo):
     """Copy -> verify against the remote's metadata hashes -> record proof ->
-    flip metadata to uploaded. Returns True only if the remote provably holds
-    the files."""
-    target = remote_base.rstrip("/") + "/" + os.path.relpath(d, base)
+    write uploaded.json. Returns True only if the remote provably holds the
+    files."""
+    rel = os.path.relpath(d, base)
+    target = remote_base.rstrip("/") + "/" + rel
+    nbytes = read_metadata(d).get("total_bytes", 0)
+    log.info("%s: uploading %s -> %s", rel, human_bytes(nbytes), target)
     if _rclone(["copy", d, target]) != 0:
+        log.error("%s: rclone copy failed", rel)
         return False
     if _rclone(["check", d, target, "--one-way"]) != 0:
-        return False                          # remote doesn't match -> not done
+        log.error("%s: rclone check failed -- remote does not match, not marking",
+                  rel)
+        return False
     proof = os.path.join(d, "REMOTE_" + manifest_name(algo))
     with open(proof + ".tmp", "w") as fo:
         if _rclone([algo + "sum", target], stdout=fo) != 0:
             os.remove(proof + ".tmp")
+            log.error("%s: could not read remote hashes for proof", rel)
             return False
     os.replace(proof + ".tmp", proof)         # what the remote actually holds
     write_uploaded(d, {                        # single-writer; presence == done
         "uploaded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "remote": target,
-        "uploaded_bytes": read_metadata(d).get("total_bytes", 0),
+        "uploaded_bytes": nbytes,
         "proof": "REMOTE_" + manifest_name(algo),
     })
+    log.info("%s: uploaded & verified against remote (%s)", rel,
+             human_bytes(nbytes))
     return True
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", help="TOML config (see host/ingest.toml)")
+    ap.add_argument("--config", help="TOML config (default: ./ingest.toml)")
     ap.add_argument("--once", action="store_true", help="one sweep, then exit")
     ap.add_argument("--interval", type=float, default=60,
                     help="seconds between sweeps (loop mode)")
     args = ap.parse_args()
+    setup_logging()
 
-    cfg = load_config(args.config)
+    config = args.config or (DEFAULT_CONFIG if os.path.exists(DEFAULT_CONFIG)
+                             else None)
+    cfg = load_config(config)
     base = cfg["dest"]["base"]
     algo = cfg["hash"]["algo"]
     remote_base = cfg.get("remote", {}).get("base", "")
     if not remote_base:
-        print("uploader: no [remote] base configured; nothing to do",
-              file=sys.stderr)
+        log.warning("no [remote] base configured; nothing to do")
         return
+    log.info("uploader: %s -> %s (every %gs)", base, remote_base, args.interval)
 
     while True:
         for d in ready_dirs(base):
-            print("uploader: uploading %s -> %s" % (d, remote_base),
-                  file=sys.stderr)
-            ok = upload_dir(d, base, remote_base, algo)
-            print("uploader: %s %s" % (d, "uploaded" if ok else "FAILED"),
-                  file=sys.stderr)
+            upload_dir(d, base, remote_base, algo)
         if args.once:
             return
         time.sleep(args.interval)

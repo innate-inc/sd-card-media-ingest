@@ -5,9 +5,11 @@ while the daemon runs, so bars hold their place on the display. A slot is
 occupied when its block device reports non-zero size (media present).
 """
 import hashlib
+import logging
 import os
-import sys
 import time
+
+log = logging.getLogger("ingest")
 
 # slots() yields, per slot, one of: a Card (media present), None (definitely
 # absent), or UNKNOWN (a probe hit a transient error -- leave the slot's job
@@ -40,8 +42,8 @@ class HubDiscovery:
         self.slot_ids = self._entries()   # fixed for the daemon's lifetime
         self._cache = {}                  # ident -> resolved Card (held while present)
         if not self.slot_ids:
-            print("warning: no block devices under hub prefix %r in %s"
-                  % (self.prefix, self.BY_PATH), file=sys.stderr)
+            log.warning("no block devices under hub prefix %r in %s",
+                        self.prefix, self.BY_PATH)
 
     def _entries(self):
         try:

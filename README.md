@@ -47,38 +47,38 @@ nix flake check          # run the test suite (proto, copier+uploader, renders)
 ### Quickstart: install / setup / config (on the box)
 
 ```bash
-# Run these from your cloned repo dir (install-service bakes it into the units).
+# Config + secrets live in THIS repo dir; run everything from here (the systemd
+# units get WorkingDirectory baked in, so keep the repo at a stable path).
+
 # 1. One-time cloud remote for the uploader (skip if you only back up locally):
 nix run .#rclone -- config                # make a remote "b2" -> ./rclone.conf
 
-# 2. Install the systemd services + a starter /etc/ingest.toml:
-nix run .#install-service
-
-# 3. Edit /etc/ingest.toml — the three things you must set:
+# 2. Edit ./ingest.toml — the three things you must set:
 #      [dest]   base    = "/media/.../ingest/"   # where copies land
 #      [remote] base    = "b2:my-bucket/ingest"  # rclone dest ("" = local only)
 #      [hub]    path_prefix = "..."              # ls /dev/disk/by-path | grep usb
 #    Leave [wipe] enabled = false until you trust it (dry-run logging).
-sudoedit /etc/ingest.toml
+$EDITOR ingest.toml
 
-# 4. Flash the display firmware and start everything:
+# 3. Flash the display firmware, install + start the services:
 nix build .#firmware-ui && nix run .#flash
+nix run .#install-service                  # units point at $PWD/ingest.toml
 sudo systemctl enable --now ingest uploader
+journalctl -fu ingest                      # watch it work
 
-# 5. When ready to REALLY delete cards after backup, arm the wipe:
-#    set [wipe] enabled = true in /etc/ingest.toml, then add to ingest.service:
-#      Environment=INGEST_ENABLE_WIPE=1
-#    (systemctl edit ingest), and: sudo systemctl restart ingest
+# 4. When ready to REALLY delete cards after backup, arm the wipe:
+#    set [wipe] enabled = true in ./ingest.toml, then: sudo systemctl restart ingest
+#    (it logs "wipe ARMED" loudly at startup).
 ```
 
 ## Wipe safety
 
 Deletion never happens automatically. A card is wiped only after every file is
 copied *and* hash-verified *and* the operator sends `confirm <i>` — and even
-then it defaults to a logged dry run. Real deletion needs **both** `[wipe]
-enabled = true` in the config **and** the environment variable
-`INGEST_ENABLE_WIPE=1` (no CLI flag, so a systemd unit arms it deliberately).
-The wipe also re-checks each source (size+mtime) right before deleting it.
+then it defaults to a logged dry run. Real deletion is armed only by `[wipe]
+enabled = true` in `ingest.toml` (the daemon logs `wipe ARMED` loudly at
+startup). The wipe also re-checks each source (size+mtime) right before deleting
+it, and every action is logged (`journalctl -u ingest`).
 
 ## Cloud upload
 

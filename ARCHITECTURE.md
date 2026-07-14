@@ -42,7 +42,7 @@ the tree, to be replaced; **planned** = designed, not yet code.
 | **Host ingest daemon** | `host/ingest*.py` | built | Discovers readers in physical order (`/dev/disk/by-path`), runs the copier, and emits the line protocol. Split into small modules — `ingest_config`, `ingest_discovery`, `ingest_copier` (**the only file that deletes**), `ingest_emit`, `ingest_link`, thin `ingest.py`. `--dry-run` runs the full lifecycle over fake cards: `nix run .#ingest -- --dry-run \| nix run .#sim`. |
 | **Copier** | `host/ingest_copier.py` | built | Per card: `scan → rclone copy → rclone check → SHA1SUMS receipt + metadata.json → pending → guarded wipe`. rclone owns the whole-dir copy + independent-double-read verify; the wipe stays ours (confirm-gated, dry-run by default, per-file size+mtime guard). |
 | **Uploader** | `host/uploader.py` | built | Separate process (`nix run .#uploader`): pushes verified ingest dirs to the cloud with rclone, then verifies against the remote's own metadata hashes (no download) and writes `uploaded.json`. Decoupled from the daemon. |
-| **systemd** | `deploy/` | built | `ingest.service` + `uploader.service`, installed by `nix run .#install-service` (bakes binary paths, drops a starter `/etc/ingest.toml`). |
+| **systemd** | `deploy/` | built | `ingest.service` + `uploader.service`, installed by `nix run .#install-service` (bakes binary paths + the project dir as `WorkingDirectory`, so they read `./ingest.toml` and `./rclone.conf`). |
 | **Tests** | `tests/` | built | `nix flake check`: `proto` (serial lines → asserted model), `ingest-unit` (copier + emitter + uploader over a fake card tree, real rclone), `ingest-render` (real daemon `--dry-run` → real LVGL → non-blank frame), `sim-render` (fixed serial feed → non-blank frame). |
 
 ## Protocol (host → device)
@@ -158,7 +158,7 @@ per-column slot number is the position indicator.
   `confirm <i>` to stdout. `--shot <ms> <file.ppm>` renders headless (for
   tests).
 
-### Host config (`host/ingest.toml`)
+### Host config (`ingest.toml`, in the project dir)
 The host config decides *everything the device doesn't*:
 - **Serial**: the device is found by USB **VID/PID** (`[serial]`), or pipe mode.
 - **Hub selection**: which USB hub's readers to watch (ignore system disks).
@@ -169,7 +169,8 @@ The host config decides *everything the device doesn't*:
   `numbers`. Okabe-Ito (colourblind-safe) by default.
 - **Remote**: `[remote] base` — the rclone destination for the uploader (empty
   = no uploading). Credentials live in rclone's own config.
-- **Wipe**: `[wipe] enabled` — real deletion also needs env `INGEST_ENABLE_WIPE=1`.
+- **Wipe**: `[wipe] enabled = true` arms real deletion (the daemon logs
+  `wipe ARMED` at startup); otherwise a confirm only logs what it would delete.
 
 ### Copier state machine (per card)
 `idle → copying → verifying → pending (verified, SHA1SUMS + metadata.json

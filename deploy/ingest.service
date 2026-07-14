@@ -4,13 +4,14 @@ After=local-fs.target
 
 [Service]
 Type=simple
-# @INGEST@ is substituted with the nix-built binary by `nix run .#install-service`.
-ExecStart=@INGEST@ --config /etc/ingest.toml
+# @WORKDIR@ / @INGEST@ are substituted by `nix run .#install-service` (the
+# project dir it's run from, and the nix-built binary).
+WorkingDirectory=@WORKDIR@
+ExecStart=@INGEST@ --config @WORKDIR@/ingest.toml
 Restart=on-failure
 RestartSec=5
-# SAFETY: real deletion ALSO needs [wipe] enabled = true in /etc/ingest.toml.
-# Uncomment to arm it (otherwise a confirmed wipe only logs what it would delete):
-# Environment=INGEST_ENABLE_WIPE=1
+# SAFETY: real deletion is armed ONLY by [wipe] enabled = true in ingest.toml;
+# otherwise a confirmed wipe just logs what it would delete.
 
 [Install]
 WantedBy=multi-user.target

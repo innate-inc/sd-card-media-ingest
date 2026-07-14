@@ -228,3 +228,18 @@ removed — see item 55.)
       copied (yellow) → verified (blue) → uploaded (green).
     - **Wipe arming** moved from `--enable-wipe` CLI to env `INGEST_ENABLE_WIPE=1`
       (systemd-friendly). Added `deploy/*.service` + `nix run .#install-service`.
+
+## Logging, config location, wipe arming
+57. **Verbose logging, config in the project dir, TOML-only wipe arming.**
+    - **Logging**: switched from ad-hoc `print(stderr)` to the stdlib `logging`
+      module (timestamps + levels), and log LOTS at sensible levels: slot
+      insert/remove with drive sizes, scan results (files + bytes), every state
+      transition, per-file wipe intent, `wipe ARMED` at startup, and the
+      previously-silent error states (HASH FAIL / COPY ERR / DEST FULL /
+      REMOVED / SRC CHANGED, all via `fail()`).
+    - **Config from the project dir**: `ingest.toml` moved to the repo root and
+      is the default `--config` (`./ingest.toml`), not `/etc`. `install-service`
+      bakes `$PWD` into the units as `WorkingDirectory` so the services read
+      `./ingest.toml` + `./rclone.conf`.
+    - **Wipe arming is TOML-only** now: `[wipe] enabled = true` is the single
+      switch (dropped the `INGEST_ENABLE_WIPE` env var); revises item 56.

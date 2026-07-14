@@ -19,12 +19,16 @@ Kept deliberately small -- this is the file that deletes footage:
     scanned, and re-checks each source (size+mtime) right before deleting.
 """
 import json
+import logging
 import os
 import subprocess
-import sys
 import tempfile
 import threading
 import time
+
+from ingest_config import human_bytes
+
+log = logging.getLogger("ingest")
 
 # The receipt filename is derived from the hash algo (e.g. SHA1SUMS). Format is
 # `<hash>  <path>` per line -- `sha1sum -c`-able.
@@ -105,14 +109,21 @@ class CardJob:
                          name="copy-%s" % self.card.label).start()
 
     def run(self):
+        lbl = self.card.label
         try:
             self.scan()
+            log.info("%s: scanned %d files, %s", lbl, len(self._src_meta),
+                     human_bytes(self.total_bytes))
             if self.total_bytes == 0:
                 self.state = EMPTY            # nothing on the card
+                log.info("%s: empty card", lbl)
                 return
             self.state = COPYING
+            log.info("%s: copying %s -> %s", lbl,
+                     human_bytes(self.total_bytes), self.dest)
             self.copy()
             self.state = VERIFYING
+            log.info("%s: verifying %d files", lbl, len(self._src_meta))
             self.verify()
             self.write_manifest()
             self.verified_bytes = self.total_bytes
@@ -123,15 +134,18 @@ class CardJob:
                 "verified_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             })
             self.state = PENDING              # wait for a human's confirm
+            log.info("%s: verified, pending -- awaiting confirm to wipe", lbl)
         except Abort:
             if self.state != ERROR:
                 self.fail("REMOVED")
-        except Exception as e:               # never let the worker die silently
-            self.fail("ERROR")
-            print("ingest: %s: %s" % (self.card.label, e), file=sys.stderr)
+        except Exception:                    # never let the worker die silently
+            self.state, self.error = ERROR, "ERROR"
+            log.exception("%s: worker error", lbl)
 
     def fail(self, why):
         self.state, self.error = ERROR, why   # keep the card; never delete
+        (log.info if why == "REMOVED" else log.error)(
+            "%s: %s", self.card.label, why)
 
     def scan(self):
         """List the card's files (for the wipe + progress); record size+mtime."""
@@ -221,8 +235,8 @@ class CardJob:
 
     def request_wipe(self):
         if self.state != PENDING:
-            print("ingest: confirm for %s ignored (state=%s, not pending)"
-                  % (self.card.label, self.state), file=sys.stderr)
+            log.warning("%s: confirm ignored (state=%s, not pending)",
+                        self.card.label, self.state)
             return False
         self.state = WIPING
         threading.Thread(target=self._wipe, daemon=True,
@@ -232,30 +246,38 @@ class CardJob:
     def _wipe(self):
         """Delete the files we verified. Before each delete, cheaply confirm the
         source is unchanged since scan (size + mtime -- the card is read-only, so
-        a change means don't touch it). Dry run unless config + env armed it."""
-        mode = "WIPE" if self.wipe_armed else "DRY-RUN wipe (kept)"
+        a change means don't touch it). Dry run unless [wipe] enabled."""
+        lbl = self.card.label
+        armed = self.wipe_armed
+        log.log(logging.WARNING if armed else logging.INFO,
+                "%s: %s of %d files (%s)", lbl,
+                "WIPE" if armed else "DRY-RUN wipe (nothing deleted)",
+                len(self._src_meta), human_bytes(self.total_bytes))
+        deleted = 0
         for rel in sorted(self._src_meta):
             if self.abort:                    # card pulled mid-wipe: stop
                 self.fail("REMOVED")
                 return
             src = os.path.join(self.card.mountpoint, rel)
-            print("ingest: %s: %s %s" % (self.card.label, mode, src),
-                  file=sys.stderr)
-            if not self.wipe_armed:
+            if not armed:
+                log.info("%s:   would delete %s", lbl, rel)
                 continue
             if not self._unchanged(src, rel):
                 self.fail("SRC CHANGED")      # touched since scan; keep the card
-                print("ingest: %s: source changed, not deleting %s"
-                      % (self.card.label, src), file=sys.stderr)
+                log.error("%s: source changed since scan, not deleting %s",
+                          lbl, rel)
                 return
             try:
                 os.remove(src)
+                deleted += 1
             except OSError as e:
                 self.fail("WIPE ERR")
-                print("ingest: wipe failed: %s" % e, file=sys.stderr)
+                log.error("%s: wipe failed on %s: %s", lbl, rel, e)
                 return
         self.wiped = True
         self.state = EMPTY
+        if armed:
+            log.warning("%s: WIPED %d files", lbl, deleted)
 
     def _unchanged(self, src, rel):
         """Source still matches what we scanned (size + mtime)?"""

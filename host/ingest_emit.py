@@ -4,11 +4,13 @@ Segments are permille of each card's OWN capacity (relative scale): uploaded
 (copied + verified) / copied-not-yet-verified / uncopied stack from the bottom;
 the leftover is free space in the `bg` colour.
 """
+import logging
 import os
-import sys
 import time
 
 from ingest_config import as_bool, color
+
+log = logging.getLogger("ingest")
 from ingest_copier import (COPYING, EMPTY, ERROR, IDLE, PENDING, VERIFYING,
                            WIPING)
 
@@ -55,8 +57,7 @@ class Emitter:
         now = time.monotonic()
         if now - self._last_warn > 5:
             self._last_warn = now
-            print("ingest: display write error (skipping frame): %s" % e,
-                  file=sys.stderr)
+            log.warning("display write error (skipping frame): %s", e)
 
     def preamble(self):
         self.emit("clear")

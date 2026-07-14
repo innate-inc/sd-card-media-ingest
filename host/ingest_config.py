@@ -1,7 +1,27 @@
-"""Configuration: defaults, TOML loading, and value coercion.
+"""Configuration: defaults, TOML loading, value coercion, and logging setup.
 
 Every value has a built-in default; a TOML file (or a CLI flag) overrides it.
 """
+import logging
+
+
+def setup_logging():
+    """INFO+ to stderr with a timestamp (journald adds its own too). Modules log
+    via logging.getLogger("ingest")."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S")
+
+
+def human_bytes(n):
+    """Human-readable size, e.g. 238.0 GB."""
+    n = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return "%d %s" % (n, unit) if unit == "B" else "%.1f %s" % (n, unit)
+        n /= 1024
+    return "%.1f TB" % n
 
 DEFAULTS = {
     "serial": {"vid": "2e8a", "pid": ""},   # "" vid+pid = stdout/stdin pipe mode

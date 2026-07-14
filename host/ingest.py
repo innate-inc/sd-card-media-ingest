@@ -18,6 +18,7 @@ about. Wiping needs a device `confirm <i>` AND is a logged dry run unless armed
 by both `[wipe] enabled = true` and `--enable-wipe`.
 """
 import argparse
+import logging
 import os
 import queue
 import sys
@@ -25,12 +26,16 @@ import tempfile
 import threading
 import time
 
-from ingest_config import as_bool, load_config
+from ingest_config import as_bool, human_bytes, load_config, setup_logging
 from ingest_copier import (CardJob, COPYING, IDLE, PENDING, read_uploaded,
                            VERIFYING, WIPING)
 from ingest_discovery import HubDiscovery, MockDiscovery, UNKNOWN
 from ingest_emit import Emitter
 from ingest_link import SerialLink, confirm_reader, find_port
+
+log = logging.getLogger("ingest")
+
+DEFAULT_CONFIG = "ingest.toml"   # in the working dir (project dir), not /etc
 
 
 def open_display(cfg, args):
@@ -42,12 +47,10 @@ def open_display(cfg, args):
         if vid or pid:
             port = find_port(vid, pid)
             if port:
+                log.info("device on %s (%s:%s)", port, vid, pid)
                 link = SerialLink(port)
-                print("ingest: device on %s (%s:%s)" % (port, vid, pid),
-                      file=sys.stderr)
                 return link, link
-            print("ingest: no serial device %s:%s; using stdout/stdin"
-                  % (vid, pid), file=sys.stderr)
+            log.warning("no serial device %s:%s; using stdout/stdin", vid, pid)
     return sys.stdin, sys.stdout
 
 
@@ -64,7 +67,7 @@ def _auto_confirm(jobs, pending_since, after_s):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", help="TOML config (see host/ingest.toml)")
+    ap.add_argument("--config", help="TOML config (default: ./ingest.toml)")
     ap.add_argument("--dry-run", action="store_true",
                     help="fake cards in a scratch dir; no hardware, no serial")
     ap.add_argument("--vid", help="USB vendor id of the device (overrides config)")
@@ -77,28 +80,31 @@ def main():
     ap.add_argument("--auto-confirm", type=float, default=0, metavar="S",
                     help="[dry-run only] auto-confirm a pending slot after S s")
     args = ap.parse_args()
+    setup_logging()
 
-    cfg = load_config(args.config)
+    config = args.config or (DEFAULT_CONFIG if os.path.exists(DEFAULT_CONFIG)
+                             else None)
+    cfg = load_config(config)
+    log.info("config: %s", config or "(built-in defaults)")
     if args.interval_ms is not None:           # honour an explicit 0, too
         cfg["poll"]["interval_ms"] = args.interval_ms
 
-    # Real deletion needs BOTH the config flag and the INGEST_ENABLE_WIPE env
-    # var (so a systemd unit arms it without CLI args), and never in dry run.
-    enable_wipe = as_bool(os.environ.get("INGEST_ENABLE_WIPE", ""))
-    wipe_armed = (as_bool(cfg["wipe"].get("enabled", False)) and enable_wipe
-                  and not args.dry_run)
-    if enable_wipe and not wipe_armed:
-        print("ingest: INGEST_ENABLE_WIPE ignored ([wipe] enabled is false%s)"
-              % (" / dry-run" if args.dry_run else ""), file=sys.stderr)
+    # Real deletion needs [wipe] enabled = true in the config (and never in a
+    # dry run). Otherwise a confirmed wipe only logs what it would delete.
+    wipe_armed = as_bool(cfg["wipe"].get("enabled", False)) and not args.dry_run
+    if wipe_armed:
+        log.warning("wipe ARMED: confirmed cards will be PERMANENTLY erased")
 
     if args.dry_run:
         root = tempfile.mkdtemp(prefix="ingest-dry-")
         disco = MockDiscovery(root)
         cfg["dest"]["base"] = args.dest or os.path.join(root, "dest")
-        print("ingest: dry run; cards + dest under %s" % root, file=sys.stderr)
+        log.info("dry run: fake cards + dest under %s", root)
     else:
         disco = HubDiscovery(args.hub_prefix or cfg["hub"]["path_prefix"])
         cfg["dest"]["base"] = args.dest or cfg["dest"]["base"]
+    log.info("dest base: %s ; %d reader slot(s)",
+             cfg["dest"]["base"], len(disco.slots()))
 
     rx, tx = open_display(cfg, args)
     emitter = Emitter(tx, cfg["segments"])
@@ -121,6 +127,7 @@ def main():
                 continue                       # transient probe error; leave as-is
             job = jobs.get(i)
             if job and (card is None or card.ident != job.card.ident):
+                log.info("slot %d: %s removed", i, job.card.label)
                 job.abort = True               # stop its worker
                 if job.state in (IDLE, COPYING, VERIFYING, WIPING):
                     job.fail("REMOVED")
@@ -128,7 +135,11 @@ def main():
                 job = None
             if card is not None and job is None:
                 if card.mountpoint is None:
+                    log.warning("slot %d: %s present but not mounted; skipping",
+                                i, card.label)
                     continue                   # present but unreadable; skip
+                log.info("slot %d: %s inserted (%s, uuid %s)", i, card.label,
+                         human_bytes(card.capacity_bytes), card.uuid)
                 job = CardJob(card, cfg, wipe_armed=wipe_armed,
                               throttle_bps=1_500_000 if args.dry_run else 0)
                 jobs[i] = job
@@ -139,10 +150,10 @@ def main():
             while True:
                 i = confirms.get_nowait()
                 if i in jobs:
+                    log.info("slot %d: confirm received -> wipe", i)
                     jobs[i].request_wipe()
                 else:
-                    print("ingest: confirm %d ignored (no card)" % i,
-                          file=sys.stderr)
+                    log.warning("confirm %d ignored (no card)", i)
         except queue.Empty:
             pass
         if args.dry_run and args.auto_confirm:

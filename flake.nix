@@ -116,21 +116,19 @@
             '';
           };
 
-          # Install the ingest + uploader systemd units (binary paths baked in)
-          # and a starter /etc/ingest.toml. Uses the system's sudo/systemctl.
+          # Install the ingest + uploader systemd units, with the project dir
+          # ($PWD, where you run this) baked in as WorkingDirectory so they read
+          # ./ingest.toml and ./rclone.conf. Uses the system's sudo/systemctl.
           install-service = pkgs.writeShellScriptBin "install-service" ''
             set -eu
-            echo "Installing ingest + uploader systemd units (uses sudo)..."
-            sed "s|@INGEST@|${ingest}/bin/ingest|" ${./deploy/ingest.service} \
-              | sudo tee /etc/systemd/system/ingest.service >/dev/null
-            sed -e "s|@UPLOADER@|${uploader}/bin/uploader|" -e "s|@WORKDIR@|$PWD|" \
-              ${./deploy/uploader.service} \
-              | sudo tee /etc/systemd/system/uploader.service >/dev/null
-            echo "  uploader WorkingDirectory + RCLONE_CONFIG -> $PWD"
-            if [ ! -f /etc/ingest.toml ]; then
-              sudo cp ${./host/ingest.toml} /etc/ingest.toml
-              echo "Wrote /etc/ingest.toml -- edit [dest] base, [remote] base, [wipe] enabled."
-            fi
+            [ -f ./ingest.toml ] || echo "warning: no ./ingest.toml in $PWD" >&2
+            echo "Installing ingest + uploader units (config dir = $PWD; uses sudo)..."
+            for u in ingest uploader; do
+              sed -e "s|@INGEST@|${ingest}/bin/ingest|" \
+                  -e "s|@UPLOADER@|${uploader}/bin/uploader|" \
+                  -e "s|@WORKDIR@|$PWD|" ${./deploy}/$u.service \
+                | sudo tee /etc/systemd/system/$u.service >/dev/null
+            done
             sudo systemctl daemon-reload
             echo "Installed. Start with:  sudo systemctl enable --now ingest uploader"
           '';

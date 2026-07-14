@@ -5,8 +5,10 @@ pyserial. In pipe mode (no vid/pid) the protocol goes to stdout and `confirm`
 lines are read from stdin instead. pyserial is imported lazily so pipe/dry-run
 mode needs no dependency.
 """
+import logging
 import re
-import sys
+
+log = logging.getLogger("ingest")
 
 
 def find_port(vid, pid):
@@ -54,4 +56,4 @@ def confirm_reader(stream, q):
             if m:
                 q.put(int(m.group(1)))
     except OSError as e:
-        print("ingest: confirm channel closed: %s" % e, file=sys.stderr)
+        log.warning("confirm channel closed: %s", e)
