@@ -115,6 +115,15 @@
             '';
           };
 
+          # Print the reader-slot mapping and exit (read-only; never copies).
+          slots = pkgs.writeShellApplication {
+            name = "slots";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              exec python3 ${./host}/slots.py "$@"
+            '';
+          };
+
           # Install the ingest + uploader systemd units, with the project dir
           # ($PWD, where you run this) baked in as WorkingDirectory so they read
           # ./ingest.toml and ./rclone.conf. Uses the system's sudo/systemctl.
@@ -148,6 +157,7 @@
           flash = { type = "app"; program = "${flash}/bin/flash"; };
           ingest = { type = "app"; program = "${ingest}/bin/ingest"; };
           uploader = { type = "app"; program = "${uploader}/bin/uploader"; };
+          slots = { type = "app"; program = "${slots}/bin/slots"; };
           install-service = { type = "app"; program = "${install-service}/bin/install-service"; };
           rclone = { type = "app"; program = "${rclone}/bin/rclone"; };
           sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
