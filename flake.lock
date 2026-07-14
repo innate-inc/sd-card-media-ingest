@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "lvgl": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1730272476,
+        "narHash": "sha256-a/UWO12xuNNJSVYHUxkav/raVNotCBX3cTjvBTEH87U=",
+        "owner": "lvgl",
+        "repo": "lvgl",
+        "rev": "7f07a129e8d77f4984fff8e623fd5be18ff42e74",
+        "type": "github"
+      },
+      "original": {
+        "owner": "lvgl",
+        "ref": "v9.2.2",
+        "repo": "lvgl",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1751274312,
@@ -18,6 +35,7 @@
     },
     "root": {
       "inputs": {
+        "lvgl": "lvgl",
         "nixpkgs": "nixpkgs"
       }
     }

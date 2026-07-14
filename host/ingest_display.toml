@@ -1,0 +1,93 @@
+# ingest-display configuration.
+#
+# Every value has a built-in default (see DEFAULTS in ingest_display.py); omit
+# anything to keep the default. The slot set is normally declared at runtime by
+# the feeder over stdin ({"slots": [...]}), so this file is mostly about looks.
+
+[serial]
+port = "auto"        # "auto" = find the RP2350 by USB id, or e.g. "/dev/ttyACM0"
+baud = 115200        # ignored by USB CDC, but harmless
+ack_timeout = 1.0    # seconds to wait for the board's "OK"/"ERR" reply
+
+[screen]
+width = 172          # physical panel is 172(W) x 320(H)
+height = 320
+background = "#000000"
+rotate = 90          # 90 = mount sideways (landscape 320x172). 270 flips it.
+
+[title]
+text = ""            # optional heading; empty for none
+height = 0           # px reserved at the top for the title
+color = "#ffffff"
+font = ""
+font_size = 16
+
+[empty]
+text = "waiting for devices…"   # shown when no slots are declared yet
+color = "#9aa0a6"
+font = ""
+font_size = 14
+
+[layout]
+style = "columns"    # "columns" (vertical gauges) or "rows" (horizontal bars)
+margin_x = 6
+margin_top = 6
+margin_bottom = 6
+row_gap = 4          # gap between columns (or rows)
+bar_radius = 3
+bar_inset = 1
+max_rows = 0         # 0 = show all slots; else cap how many are drawn
+# "rows" style only:
+label_width = 48     # px reserved on the left for the label
+percent_width = 34   # px reserved on the right for "NN%"
+
+# "columns" style: each device is a vertical fill gauge (used vs free space).
+# Default colours are the Okabe-Ito colourblind-safe palette.
+[gauge]
+full_color = "#E69F00"    # used / filled portion (orange)
+empty_color = "#009E73"   # free / empty portion (bluish green)
+text_color = "#ffffff"
+font = ""
+font_size = 15
+show_percent = true
+percent_font_size = 13
+name_max = 10             # truncate the device name to this many chars
+toggle = true             # alternate the label between "slot# name" and "eta size"
+toggle_hz = 0.5           # 0.5 Hz -> swap every 2 seconds
+
+# "rows" style styling (ignored by "columns").
+[label]
+color = "#ffffff"
+font = ""
+font_size = 14
+
+[percent]
+show = true
+color = "#9aa0a6"
+font = ""
+font_size = 12
+
+[bar]
+track_color = "#1e1e1e"
+fill_color = "#22c35e"
+border_color = "#3c4043"
+border_width = 1
+
+# Fill colour per status (rows style, and inferred from progress otherwise).
+[status_colors]
+idle = "#3b5bdb"
+active = "#22c35e"
+done = "#22c35e"
+error = "#e03131"
+paused = "#f08c00"
+
+[render]
+min_interval_ms = 80      # coalesce bursts of updates; ~12 fps cap
+
+[lock]
+path = ""                 # empty -> $XDG_RUNTIME_DIR (or /tmp)/sd-card-ingest-display.lock
+
+# Optional fixed slot set. Leave empty ([]) so the feeder declares slots at
+# runtime in physical order. Feeder update fields per slot:
+#   progress (0..1 or 0..100), status, label, rate (frac/s), eta (s), size|gb
+slots = []

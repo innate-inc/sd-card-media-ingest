@@ -5,7 +5,13 @@
   # releases with RP2350 support) and still evaluates on older Nix versions.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
 
-  outputs = { self, nixpkgs }:
+  # LVGL: the on-device UI framework (also builds the desktop simulator).
+  inputs.lvgl = {
+    url = "github:lvgl/lvgl/v9.2.2";
+    flake = false;
+  };
+
+  outputs = { self, nixpkgs, lvgl }:
     let
       # The board only builds on Linux hosts that Nix can cross-compile from.
       systems = [ "x86_64-linux" "aarch64-linux" ];
@@ -59,9 +65,21 @@
               platforms = systems;
             };
           };
+
+          # Desktop simulator: the exact LVGL UI in an SDL window.
+          sim = pkgs.stdenv.mkDerivation {
+            pname = "ingest-sim";
+            version = "0.1.0";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
+            buildInputs = [ pkgs.SDL2 ];
+            cmakeDir = "../sim";
+            cmakeFlags = [ "-DLVGL_DIR=${lvgl}" ];
+            meta.description = "SDL desktop simulator for the ingest display UI";
+          };
         in
         {
-          inherit firmware;
+          inherit firmware sim;
           default = firmware;
         });
 
@@ -95,7 +113,8 @@
         {
           flash = { type = "app"; program = "${flash}/bin/flash"; };
           send = { type = "app"; program = "${send}/bin/send"; };
-          default = self.apps.${system}.send;
+          sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
+          default = self.apps.${system}.sim;
         });
 
       devShells = forAllSystems (pkgs:
