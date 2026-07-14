@@ -1,39 +1,49 @@
 # SD-card / USB media ingest station
 
-Copy footage off a bank of USB card readers, hash-verify every file, and only
-wipe a card once a human confirms — with live per-card status on a small LCD.
+Copy footage off a bank of USB card readers, hash-verify every file, upload it
+to the cloud, and only wipe a card once a human confirms — with live per-card
+status on a small LCD.
 
-The system splits into a **dumb display** and a **smart host**:
+The system splits into a **dumb display** and a **smart host**, and the risky
+copy/verify/upload is delegated to **rclone**:
 
 - **Device** (`device/`, `app/`) — a **Waveshare RP2350-LCD-1.47-A** running an
-  LVGL UI. It knows nothing about cards or copying; it renders the stacked
-  progress bars and text the host sends over a plain-text serial line protocol,
-  and sends back `confirm <i>` when the operator approves a wipe (via the
-  board's BOOTSEL button).
-- **Host** (`host/ingest.py`) — discovers the readers in physical order, copies
-  each card, hash-verifies, writes a manifest, and drives the display. It is the
-  only thing that ever deletes, and only on an explicit confirm.
-- **Simulator** (`sim/`) — the exact device UI in an SDL window, for developing
-  without hardware.
+  LVGL UI. It renders the four-stage progress bars the host sends over a serial
+  line protocol, and sends back `confirm <i>` when the operator approves a wipe
+  (via the board's BOOTSEL button).
+- **Ingest daemon** (`host/ingest*.py`) — discovers readers in physical order,
+  and per card runs `rclone copy` → `rclone check` into
+  `dest_base/<uuid>/<ingest_date>/`, then waits for a confirm to wipe. It is the
+  only thing that deletes, and only on an explicit confirm.
+- **Uploader** (`host/uploader.py`) — a *separate* process that pushes verified
+  ingest dirs to a cloud remote (rclone) and proves it by re-checking against
+  the remote's own hashes. Decoupled, so a card can be wiped and gone while its
+  local copy is still uploading.
+- **Simulator** (`sim/`) — the exact device UI in an SDL window, no hardware.
 
-See `ARCHITECTURE.md` for the split + line protocol, `INGEST_PLAN.md` for the
-copier design, and `DECISIONS.md` for the running rationale.
+The bar climbs through four colourblind-safe stages: **uncopied → copied →
+verified → uploaded**. See `ARCHITECTURE.md` for the full split + protocol and
+`DECISIONS.md` for the running rationale.
 
 ## Quick start (Nix)
 
-Requires Nix with flakes enabled (`experimental-features = nix-command flakes`).
+Requires Nix with flakes enabled (`experimental-features = nix-command flakes`),
+and `rclone` (provided by the flake apps).
 
 ```bash
 # Watch the whole ingest lifecycle with no hardware: the real daemon drives the
 # simulator with fake cards (copy -> verify -> pending -> wipe).
 nix run .#ingest -- --dry-run | nix run .#sim
 
-# The real thing: discover readers, copy + verify, await confirm, (dry) wipe.
-nix run .#ingest -- --config host/ingest.toml
+# The real thing:
+nix run .#ingest   -- --config /etc/ingest.toml   # discover, copy+verify, wipe
+nix run .#uploader -- --config /etc/ingest.toml   # push verified dirs to cloud
 
 # Build + flash the on-device display firmware (-> ./result/firmware.uf2).
-nix build .#firmware-ui
-nix run .#flash
+nix build .#firmware-ui && nix run .#flash
+
+# Install both as systemd services (bakes paths, drops /etc/ingest.toml).
+nix run .#install-service
 ```
 
 In the simulator, **SPACE** stands in for the board's BOOTSEL button (hold past
@@ -44,8 +54,19 @@ In the simulator, **SPACE** stands in for the board's BOOTSEL button (hold past
 Deletion never happens automatically. A card is wiped only after every file is
 copied *and* hash-verified *and* the operator sends `confirm <i>` — and even
 then it defaults to a logged dry run. Real deletion needs **both** `[wipe]
-enabled = true` in `host/ingest.toml` **and** `--enable-wipe` on the CLI. See
-`host/ingest.toml` for the full config surface.
+enabled = true` in the config **and** the environment variable
+`INGEST_ENABLE_WIPE=1` (no CLI flag, so a systemd unit arms it deliberately).
+The wipe also re-checks each source (size+mtime) right before deleting it.
+
+## Cloud upload
+
+The uploader pushes each verified `dest_base/<uuid>/<date>/` to `[remote] base`
+(an rclone destination like `b2:bucket/ingest`, `gdrive:ingest`, or a second
+disk), then runs `rclone check` against the remote — which reads the backend's
+stored **SHA1** from object metadata, so it confirms the bytes are really up
+there **without downloading**. Proof is recorded in `REMOTE_SHA1SUMS` and the
+dir's `metadata.json` flips to `uploaded`. The remote + credentials come from
+rclone's own config (`rclone config`).
 
 ## Board doesn't show up
 

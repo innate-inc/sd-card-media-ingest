@@ -203,3 +203,25 @@ removed — see item 55.)
     vendored Waveshare LCD driver moved `firmware/lib/` → `device/lib/` (the LVGL
     device firmware still uses it). Supersedes the "kept as flash-image" note in
     item 31.
+
+## rclone core + cloud upload
+56. **Copy/verify delegated to rclone; cloud upload; 4-stage display.**
+    - **rclone** owns the risky part: per card, `rclone copy` then
+      `rclone check --one-way` (an independent double-read verify — hashes both
+      sides from fresh reads, which is the whole point of verifying before a
+      wipe). Live progress is parsed from rclone's `--stats` JSON. The receipt is
+      `rclone sha1sum` output (`SHA1SUMS`, `sha1sum -c`-able). The guarded wipe
+      stays hand-rolled. Most of the hand-written copy/hash code was deleted.
+    - **Hash → sha1**: the one hash Google Drive, Backblaze B2, and S3 all serve
+      from object metadata, so the remote can be verified without downloading.
+    - **Separate uploader** (`host/uploader.py`, `nix run .#uploader`): pushes
+      verified dirs to `[remote] base` via rclone, verifies against the remote's
+      metadata hashes (no download), records `REMOTE_SHA1SUMS` proof. Decoupled
+      from the daemon so a wiped card's copy still uploads.
+    - **`metadata.json`** per ingest dir replaced the `.uploaded` marker: the
+      copier writes `state: verified`, the uploader flips it to `uploaded`
+      (+ `uploaded_bytes`), the daemon reads it to fill the display's green.
+    - **Display = 4 colourblind-safe stages** (Okabe-Ito): uncopied (orange) →
+      copied (yellow) → verified (blue) → uploaded (green).
+    - **Wipe arming** moved from `--enable-wipe` CLI to env `INGEST_ENABLE_WIPE=1`
+      (systemd-friendly). Added `deploy/*.service` + `nix run .#install-service`.

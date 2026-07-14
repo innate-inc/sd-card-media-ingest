@@ -1,11 +1,14 @@
 # SD-card ingest station — plan
 
-Status: **implemented** (first pass). The host-side ingest daemon + copier this
-plan describes now lives in `host/ingest.py` (discovery → copier → emitter →
-confirm → guarded-wipe); `--dry-run` runs the whole lifecycle over fake cards.
-Phases 1–4 below are built; wiping defaults to a triple-guarded dry-run. Untested
-against real readers (dev box has none). This plan remains the rationale of
-record for the design.
+Status: **implemented** (first pass) — but the copier design below has since
+been superseded by **rclone**: copy + verify are `rclone copy` / `rclone check`,
+the hash is **sha1**, files land in `dest_base/<uuid>/<ingest_date>/`, and a
+**separate uploader** (`host/uploader.py`) pushes verified dirs to the cloud.
+The daemon lives in `host/ingest*.py`; `--dry-run` runs the whole lifecycle over
+fake cards. Wiping defaults to a guarded dry-run (needs `[wipe] enabled` + env
+`INGEST_ENABLE_WIPE=1`). See `ARCHITECTURE.md` for the current design; this file
+is kept for the original rationale. Untested against real readers (dev box has
+none).
 
 ## Goal & scope
 
