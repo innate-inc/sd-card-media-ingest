@@ -1,11 +1,14 @@
 # ingest daemon configuration (see INGEST_PLAN.md / ARCHITECTURE.md).
 #
-# Every value has a built-in default (see DEFAULTS in ingest.py); omit anything
-# to keep the default. CLI flags (--port, --dest, --hub-prefix, ...) override.
+# Every value has a built-in default (see DEFAULTS in ingest_config.py); omit
+# anything to keep the default. CLI flags (--vid, --dest, --hub-prefix, ...)
+# override.
 
 [serial]
-port = ""            # "" = protocol on stdout, confirms on stdin (pipe mode);
-                     # or e.g. "/dev/ttyACM0" to own the device's tty directly
+# The device is found by USB VID/PID (its /dev/ttyACM* name isn't stable).
+# Leave both "" for pipe mode (protocol on stdout, confirms on stdin).
+vid = "2e8a"         # Raspberry Pi / RP2350
+pid = ""             # "" = match any product id under that vendor
 
 [hub]
 # /dev/disk/by-path prefix of the reader hub. Only block devices under this
@@ -14,10 +17,10 @@ port = ""            # "" = protocol on stdout, confirms on stdin (pipe mode);
 path_prefix = "pci-0000:00:14.0-usb-0:2"
 
 [dest]
-base = "/mnt/ingest"           # files land in base/<partition-UUID>/
+base = "/media/jetson1/jetson_backup/ingest/"   # files land in base/<uuid>/<date>/
 
 [hash]
-algo = "sha256"                # anything hashlib knows
+algo = "md5"                   # cheapest hashlib algo; a copy check, not crypto
 
 [segments]
 # Meaning -> colour for the stacked bars; the host computes the permilles.
@@ -26,10 +29,6 @@ copied = "#0072B2"             # copied, awaiting verification
 uncopied = "#E69F00"           # still only on the card
 empty = "#202020"              # free space (the protocol `bg` colour)
 numbers = true                 # per-segment GB numbers on the bars
-
-[confirm]
-method = "stdin"               # stdin | serial -- where `confirm <i>` arrives
-                               # (serial = the device's BOOTSEL gesture)
 
 [poll]
 interval_ms = 500              # discovery + display tick; also the hb period

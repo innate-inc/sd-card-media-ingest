@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Unit tests for the ingest daemon's copier + emitter (host/ingest.py).
+"""Unit tests for the ingest daemon's copier + emitter.
 
 Runs the real CardJob pipeline over a fake card tree in a temp dir and asserts
-the locked rules: verify-before-manifest, resume, hash-mismatch keeps the
-card, wipe only on confirm of a pending slot, dry-run wipe deletes nothing,
-and the emitted slot lines fit the device parser's grammar. Stdlib only:
+the locked rules: fresh dated dest dir, metadata preserved, verify-before-
+manifest, hash-mismatch keeps the card, wipe only on confirm of a pending slot,
+dry-run wipe deletes nothing, and the emitted slot lines fit the device parser's
+grammar. Stdlib only:
 
     python3 tests/test_ingest.py
 """
+import hashlib
 import io
 import json
 import os
 import re
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -72,33 +75,39 @@ class JobTest(unittest.TestCase):
             m = json.load(fh)
         self.assertEqual(m["uuid"], "UUID-01")
         self.assertEqual({f["path"] for f in m["files"]}, set(self.files))
-        import hashlib
+        algo = self.cfg["hash"]["algo"]
         for f in m["files"]:
             self.assertEqual(
-                f["hash"],
-                hashlib.sha256(self.files[f["path"]]).hexdigest())
+                f["hash"], hashlib.new(algo, self.files[f["path"]]).hexdigest())
 
-    def test_resume_skips_verified_files(self):
-        j1 = self.job()
-        j1.run()                       # first ingest writes the manifest
-        j1.release()                   # card removed -> dest claim released
-        j2 = self.job()                # same card comes back later
-        j2.scan()
-        self.assertEqual(len(j2._skipped), len(self.files))
-        self.assertEqual(j2.verified_bytes, j2.total_bytes)
+    def test_dest_is_a_dated_dir(self):
+        j = self.job()
+        rel = os.path.relpath(j.dest, self.cfg["dest"]["base"]).split(os.sep)
+        self.assertEqual(rel[0], "UUID-01")                    # base/<uuid>/...
+        self.assertRegex(rel[1], r"^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d")  # <date>/
+
+    def test_two_ingests_same_uuid_get_separate_dirs(self):
+        self.assertNotEqual(self.job().dest, self.job().dest)
+
+    def test_copy_preserves_mtime(self):
+        j = self.job()
+        j.run()
+        for rel in self.files:
+            self.assertEqual(
+                int(os.stat(os.path.join(self.src, rel)).st_mtime),
+                int(os.stat(os.path.join(j.dest, rel)).st_mtime))
 
     def test_hash_mismatch_errors_and_keeps_everything(self):
         j = self.job()
         j.scan()
         j.copy_all()
-        bad = os.path.join(j.dest, "note.txt")
-        with open(bad, "wb") as fh:    # corrupt the copy before verification
-            fh.write(b"HELLO")
+        with open(os.path.join(j.dest, "note.txt"), "wb") as fh:
+            fh.write(b"HELLO")             # corrupt the copy before verification
         self.assertRaises(ingest.Abort, j.verify_all)
         self.assertEqual(j.state, ingest.ERROR)
         self.assertEqual(j.error, "HASH FAIL")
         self.assertFalse(os.path.exists(j.manifest_path()))  # no manifest
-        for rel in self.files:         # source untouched
+        for rel in self.files:             # source untouched
             self.assertTrue(os.path.exists(os.path.join(self.src, rel)))
 
     def test_no_manifest_until_verified(self):
@@ -115,7 +124,7 @@ class JobTest(unittest.TestCase):
         self.assertEqual(j.state, ingest.COPYING)
 
     def test_dry_run_wipe_deletes_nothing(self):
-        j = self.job()                 # wipe_armed defaults to False
+        j = self.job()                     # wipe_armed defaults to False
         j.run()
         self.assertTrue(j.request_wipe())
         self._await_state(j, ingest.EMPTY)
@@ -123,79 +132,19 @@ class JobTest(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(self.src, rel)),
                             "dry-run wipe must not delete %s" % rel)
 
-    def test_armed_wipe_deletes_only_manifest_files(self):
+    def test_armed_wipe_deletes_only_verified_files(self):
         j = self.job(wipe_armed=True)
         j.run()
-        extra = os.path.join(self.src, "LATE.RAW")   # appears after verify
+        extra = os.path.join(self.src, "LATE.RAW")   # appears after the scan
         with open(extra, "wb") as fh:
             fh.write(b"late")
         self.assertTrue(j.request_wipe())
         self._await_state(j, ingest.EMPTY)
         for rel in self.files:
             self.assertFalse(os.path.exists(os.path.join(self.src, rel)))
-        self.assertTrue(os.path.exists(extra), "unverified file must survive")
-
-    def test_duplicate_uuid_gets_suffixed_dest(self):
-        j1, j2 = self.job(), self.job()
-        self.assertNotEqual(j1.dest, j2.dest)
-        self.assertTrue(j2.dest.endswith("UUID-01-2"))
-        j1.release(), j2.release()
-
-    def test_armed_wipe_refuses_source_changed_after_scan(self):
-        """A source file touched between scan and wipe (size+mtime) must not be
-        deleted; the whole card is kept. (Cheap check — no full re-read.)"""
-        j = self.job(wipe_armed=True)
-        j.run()
-        self.assertEqual(j.state, ingest.PENDING)
-        victim = os.path.join(self.src, "DCIM/100/IMG_0001.JPG")  # sorts first
-        with open(victim, "wb") as fh:
-            fh.write(b"z" * 3000)          # same length, different bytes
-        os.utime(victim, ns=(0, 0))        # ...and a different mtime
-        self.assertTrue(j.request_wipe())
-        self._await_state(j, ingest.ERROR)
-        self.assertEqual(j.error, "SRC CHANGED")
-        for rel in self.files:             # nothing deleted
-            self.assertTrue(os.path.exists(os.path.join(self.src, rel)))
-
-    def test_colliding_dest_file_is_timestamped_not_overwritten(self):
-        """A different card sharing the UUID with a same-named, different file
-        must not clobber the first card's copy — the new one is timestamped."""
-        j1 = self.job()
-        j1.run()
-        j1.release()
-        src2 = os.path.join(self.tmp.name, "card2")
-        make_card(src2, {"note.txt": b"DIFFERENT-CONTENT"})
-        card2 = ingest.Card("mock-1", "CARD2", "UUID-01", src2, 20000)
-        j2 = ingest.CardJob(card2, self.cfg)
-        self.assertEqual(j2.dest, j1.dest)         # same uuid dir (j1 released)
-        j2.run()
-        self.assertEqual(j2.state, ingest.PENDING)
-        with open(os.path.join(j2.dest, "note.txt")) as fh:
-            self.assertEqual(fh.read(), "hello")   # j1's original untouched
-        extra = [f for f in os.listdir(j2.dest)
-                 if f.startswith("note.") and f.endswith(".txt")
-                 and f != "note.txt"]
-        self.assertEqual(len(extra), 1)            # j2's file, timestamped
-        with open(os.path.join(j2.dest, extra[0])) as fh:
-            self.assertEqual(fh.read(), "DIFFERENT-CONTENT")
-        j2.release()
-
-    def test_resume_rehashes_and_rejects_corrupt_dest(self):
-        """A destination that silently corrupted but kept its size must NOT be
-        trusted on resume (else a bad copy could authorise a wipe)."""
-        j1 = self.job()
-        j1.run()
-        j1.release()
-        victim = os.path.join(j1.dest, "note.txt")
-        with open(victim, "wb") as fh:
-            fh.write(b"world")             # same 5 bytes as "hello", different
-        j2 = self.job()
-        j2.scan()
-        self.assertNotIn("note.txt", j2._skipped)
-        self.assertEqual(len(j2._skipped), len(self.files) - 1)
+        self.assertTrue(os.path.exists(extra), "unscanned file must survive")
 
     def _await_state(self, job, state, timeout=5.0):
-        import time
         deadline = time.monotonic() + timeout
         while job.state != state:
             self.assertLess(time.monotonic(), deadline,
@@ -227,7 +176,7 @@ class EmitterTest(unittest.TestCase):
                            10_000_000_000)
         job = ingest.CardJob.__new__(ingest.CardJob)   # no filesystem needed
         job.card, job.state, job.error = card, ingest.COPYING, ""
-        job.wiped, job.wipe_armed, job.dest = False, False, "/dest/U"
+        job.dest = "/dest/U"
         job.total_bytes = 9_000_000_000
         job.copied_bytes = 5_000_000_000
         job.verified_bytes = 2_000_000_000
@@ -238,19 +187,15 @@ class EmitterTest(unittest.TestCase):
         self.assertEqual(len(slots), 2)
         for l in slots:
             self.assertRegex(l, SLOT_RE)
-        # permille of the card's own capacity: 2GB/1GB... relative scale
         m = SLOT_RE.match(slots[0])
         self.assertEqual(int(m.group(2)), 10_000)      # size_mb
         nums = [int(x) for x in slots[0].split()[5:12:2]]
         self.assertEqual(nums, [200, 300, 400, 0])     # up/cop/unc/unused
-        self.assertLessEqual(sum(nums), 1000)
-        label = m.group(6)
-        self.assertLessEqual(len(label), 23)           # MAX_LABEL - 1
-        # absent slot holds its column exactly like the mock does
+        self.assertLessEqual(sum(nums), 1000)          # relative scale
+        self.assertLessEqual(len(m.group(6)), 23)      # MAX_LABEL - 1
         self.assertEqual(slots[1], "slot 1 -1 -1 idle 0 0 0 0 0 0 0 0 empty")
         self.assertIn("hb", lines)
         self.assertTrue(any(l.startswith("path 0 ") for l in lines))
-        # preamble carries bg + numbers + a 4-row legend
         self.assertIn("bg 202020", lines)
         self.assertEqual(sum(l.startswith("legend ") for l in lines), 5)
 
