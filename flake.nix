@@ -142,11 +142,23 @@
               exec python ${./host/send_image.py} "$@"
             '';
           };
+
+          # The real ingest daemon: discover -> copy -> verify -> manifest ->
+          # confirm -> (dry-run) wipe, emitting the same protocol. Stdlib only.
+          # `--dry-run` runs the full pipeline over fake cards, no hardware.
+          ingest = pkgs.writeShellApplication {
+            name = "ingest";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              exec python3 ${./host/ingest.py} "$@"
+            '';
+          };
         in
         {
           flash = { type = "app"; program = "${flash}/bin/flash"; };
           flash-image = { type = "app"; program = "${flash-image}/bin/flash-image"; };
           send = { type = "app"; program = "${send}/bin/send"; };
+          ingest = { type = "app"; program = "${ingest}/bin/ingest"; };
           sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
           default = self.apps.${system}.sim;
         });
@@ -162,6 +174,27 @@
             ./test
             touch $out
           '';
+
+          # Unit test: the ingest daemon's copier + emitter over a fake card
+          # tree (verify-before-manifest, resume, wipe guards, line grammar).
+          ingest-unit = pkgs.runCommand "test-ingest-unit"
+            { nativeBuildInputs = [ pkgs.python3 ]; } ''
+              mkdir host tests
+              cp ${./host/ingest.py} host/ingest.py
+              cp ${./tests/test_ingest.py} tests/test_ingest.py
+              python3 tests/test_ingest.py
+              touch $out
+            '';
+
+          # End-to-end: the REAL daemon (dry-run discovery + real copier) feeds
+          # the REAL sim; assert the frame rendered (same check as sim-render).
+          ingest-render = pkgs.runCommand "test-ingest-render"
+            { nativeBuildInputs = [ pkgs.python3 ]; } ''
+              python3 ${./host/ingest.py} --dry-run --interval-ms 100 --ticks 30 \
+                | ${self.packages.${system}.sim}/bin/ingest-sim --shot 800 out.ppm
+              python3 ${./tests/check_ppm.py} out.ppm
+              touch $out
+            '';
 
           # Smoke test: a fixed serial feed through the real LVGL sim, asserting
           # it rendered a non-blank frame (headless snapshot).
