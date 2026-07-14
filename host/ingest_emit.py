@@ -105,11 +105,19 @@ class Emitter:
     def _slot_line(self, i, job):
         cap = max(job.card.capacity_bytes, 1)
         pm = lambda b: max(0, min(1000, round(b * 1000 / cap)))
-        # four stacked stages, most-done at the bottom (p0):
-        uploaded = pm(job.uploaded_bytes)
-        verified = pm(job.verified_bytes - job.uploaded_bytes)
-        copied = pm(job.copied_bytes - job.verified_bytes)
-        uncopied = pm(job.total_bytes - job.copied_bytes)
+        # Four stacked stages, most-done at the bottom (p0). Round *cumulative*
+        # boundaries (each >= the last) and take differences, so the segments
+        # always sum to exactly pm(total_bytes). Rounding each stage's delta
+        # independently instead makes the sum -- and thus the "free" leftover --
+        # jitter by a permille every tick as the copied/uncopied split moves.
+        b_up = pm(job.uploaded_bytes)
+        b_ver = max(b_up, pm(job.verified_bytes))
+        b_cop = max(b_ver, pm(job.copied_bytes))
+        b_tot = max(b_cop, pm(job.total_bytes))
+        uploaded = b_up
+        verified = b_ver - b_up
+        copied = b_cop - b_ver
+        uncopied = b_tot - b_cop
         size_mb = cap // 1_000_000
         status = _STATUS.get(job.state, "idle")
         if job.state == WIPING:
