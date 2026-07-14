@@ -90,6 +90,43 @@ there **without downloading**. Proof is recorded in `REMOTE_SHA1SUMS`, and an
 uploader owns `uploaded.json` — one writer each). The remote + credentials come
 from rclone's own config (`rclone config`).
 
+### Set up Backblaze B2 with rclone
+
+```bash
+# In the Backblaze web console:
+#   1. Create a bucket (e.g. "myco-ingest"), Private.
+#   2. Application Keys -> Add a New Application Key, restricted to that bucket,
+#      Read and Write. Copy the keyID and applicationKey (shown only once).
+
+# Configure the rclone remote, interactively:
+rclone config
+#   n) New remote          name> b2
+#   Storage>               b2            # Backblaze B2
+#   account (Account ID or Application Key ID)>  <keyID>
+#   key (Application Key)>                       <applicationKey>
+#   ...accept defaults, y) keep, q) quit
+
+# ...or in one shot:
+rclone config create b2 b2 account <keyID> key <applicationKey>
+
+# Verify:
+rclone lsd b2:                    # lists your buckets
+rclone ls  b2:myco-ingest         # (empty at first)
+
+# Then in /etc/ingest.toml:
+#   [remote]
+#   base = "b2:myco-ingest/ingest"
+```
+
+B2 stores each object's **SHA1** in metadata (rclone supplies it even for large
+multipart files), so `rclone check`/`sha1sum` verify the upload from metadata
+alone — no download. That's why the pipeline hashes with SHA1.
+
+**systemd note:** the `uploader` service runs as **root**, so it reads
+`/root/.config/rclone/rclone.conf`. Either run the `rclone config` above with
+`sudo` (so the remote lands there), or point the unit at a shared config with
+`Environment=RCLONE_CONFIG=/etc/rclone.conf` (`sudo systemctl edit uploader`).
+
 ## Board doesn't show up
 
 The tools find the board by its USB id (`2e8a`). If `nix run .#flash` says "no
