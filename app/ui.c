@@ -37,7 +37,8 @@ typedef struct {
 /* One-button navigation states. */
 typedef enum {
     NAV_BROWSE = 0,  /* auto-cycling status view */
-    NAV_SELECT,      /* a card is highlighted; short=next, long=open */
+    NAV_SELECT,      /* a card (or the legend stop) is highlighted; short=next,
+                        long=open card */
     NAV_DETAIL,      /* card detail; short=back, hold 5s=wipe */
 } nav_t;
 
@@ -222,10 +223,15 @@ static void draw_legend(void) {
 static void refresh(void) {
     int total = g.model.count;
 
-    /* a card can vanish (unplugged) while we're navigating it: keep sel valid */
+    /* a card can vanish (unplugged) while we're navigating it: keep sel valid.
+     * In SELECT, sel == total is the legend stop (one past the last card). */
     if (g.nav != NAV_BROWSE) {
         if (total <= 0) g.nav = NAV_BROWSE;
-        else if (g.sel >= total) g.sel = total - 1;
+        else {
+            int maxsel = total - 1;
+            if (g.nav == NAV_SELECT && has_legend()) maxsel = total;
+            if (g.sel > maxsel) g.sel = maxsel;
+        }
     }
 
     /* detail: full-screen card info, nothing else */
@@ -248,8 +254,10 @@ static void refresh(void) {
     }
     lv_obj_add_flag(g.waiting, LV_OBJ_FLAG_HIDDEN);
 
-    /* in SELECT the page follows the highlighted card, not the auto-cycle */
-    if (g.nav == NAV_SELECT && total > 0) g.page = page_of_card(g.sel);
+    /* in SELECT the page follows the highlighted card, not the auto-cycle;
+     * the legend stop (sel == total) shows the legend page (page 0). */
+    if (g.nav == NAV_SELECT && total > 0)
+        g.page = (has_legend() && g.sel == total) ? 0 : page_of_card(g.sel);
     if (g.page >= page_count()) g.page = 0;
 
     if (has_legend() && g.page == 0) {
@@ -613,11 +621,15 @@ void ui_button(int kind) {
         break;
     case NAV_SELECT:
         if (total <= 0) { g.nav = NAV_BROWSE; break; }
-        /* only a finished card opens the wipe screen; empty/copying aren't */
+        /* only a finished card opens the wipe screen; empty/copying aren't, and
+         * the legend stop (sel == total) is not a card at all */
         if (kind == UI_BTN_LONG) {
-            if (slot_wipeable(&g.model.slots[g.sel])) g.nav = NAV_DETAIL;
+            if (g.sel < total && slot_wipeable(&g.model.slots[g.sel]))
+                g.nav = NAV_DETAIL;
         } else {
-            g.sel = (g.sel + 1) % total;
+            /* short = next card, then the legend page (if any), then wrap */
+            int stops = total + (has_legend() ? 1 : 0);
+            g.sel = (g.sel + 1) % stops;
         }
         break;
     case NAV_DETAIL:
