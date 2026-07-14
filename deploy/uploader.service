@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=simple
 # @UPLOADER@ is substituted with the nix-built binary by `nix run .#install-service`.
 ExecStart=@UPLOADER@ --config /etc/ingest.toml --interval 60
+# rclone remote + credentials; put yours here with `nix run .#install-rclone-config`.
+Environment=RCLONE_CONFIG=/etc/rclone.conf
 Restart=on-failure
 RestartSec=15
 

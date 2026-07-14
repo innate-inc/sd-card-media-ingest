@@ -48,7 +48,8 @@ nix flake check          # run the test suite (proto, copier+uploader, renders)
 
 ```bash
 # 1. One-time cloud remote for the uploader (skip if you only back up locally):
-nix run nixpkgs#rclone -- config          # make a remote, e.g. name it "b2"
+rclone config                             # make a remote, e.g. name it "b2"
+nix run .#install-rclone-config           # copy it to /etc/rclone.conf (root)
 
 # 2. Install the systemd services + a starter /etc/ingest.toml:
 nix run .#install-service
@@ -122,10 +123,10 @@ B2 stores each object's **SHA1** in metadata (rclone supplies it even for large
 multipart files), so `rclone check`/`sha1sum` verify the upload from metadata
 alone — no download. That's why the pipeline hashes with SHA1.
 
-**systemd note:** the `uploader` service runs as **root**, so it reads
-`/root/.config/rclone/rclone.conf`. Either run the `rclone config` above with
-`sudo` (so the remote lands there), or point the unit at a shared config with
-`Environment=RCLONE_CONFIG=/etc/rclone.conf` (`sudo systemctl edit uploader`).
+**systemd note:** the `uploader` service runs as **root** and reads its remote
+from `/etc/rclone.conf` (set in the unit as `RCLONE_CONFIG`). After you
+`rclone config` as your normal user, run **`nix run .#install-rclone-config`** to
+copy that config there (root-only, mode 600); pass a path to use a different one.
 
 ## Board doesn't show up
 
