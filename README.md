@@ -171,7 +171,10 @@ devices in BOOTSEL" or no `2e8a` serial port appears:
   onto it).
 - Once firmware is running it enumerates as a serial port (`/dev/ttyACM*`).
 
-## Serial permissions
+## Permissions
 
-`picotool` may need udev rules or `sudo`; the CDC port (`/dev/ttyACM*`) needs
-your user in the `dialout` group (log out/in after `usermod -aG dialout $USER`).
+`picotool` needs root for raw USB access (without it, some builds *segfault*
+instead of erroring), so **`nix run .#flash` calls `sudo picotool`** — it'll
+prompt for your password. The CDC port (`/dev/ttyACM*`) the daemon reads needs
+your user in the `dialout` group (`sudo usermod -aG dialout $USER`, then log
+out/in), or a udev rule granting the `2e8a` tty.

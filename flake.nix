@@ -76,16 +76,15 @@
           pythonEnv = pkgs.python3.withPackages (ps: [ ps.pyserial ]);
           firmware-ui = self.packages.${system}.firmware-ui;
 
-          flash = pkgs.writeShellApplication {
-            name = "flash";
-            runtimeInputs = [ pkgs.picotool ];
-            text = ''
-              # Put the board in BOOTSEL (hold BOOT while plugging in) OR rely on
-              # picotool -f to reboot a running board that exposes the reset iface.
-              echo "Flashing ${firmware-ui}/firmware.uf2 ..."
-              picotool load -f -x "${firmware-ui}/firmware.uf2"
-            '';
-          };
+          # writeShellScriptBin (not writeShellApplication) so the *system* sudo
+          # on the caller's PATH is used -- picotool needs root for raw USB
+          # access (without it, some builds segfault instead of erroring). `-f`
+          # reboots a running board into BOOTSEL via its reset interface.
+          flash = pkgs.writeShellScriptBin "flash" ''
+            uf2="${firmware-ui}/firmware.uf2"
+            echo "Flashing $uf2 (via sudo picotool)..."
+            exec sudo ${pkgs.picotool}/bin/picotool load -f -x "$uf2"
+          '';
 
           # The real ingest daemon: discover -> copy -> verify -> manifest ->
           # confirm -> (dry-run) wipe, emitting the same protocol. Split across
