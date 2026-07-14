@@ -66,6 +66,35 @@
             };
           };
 
+          # Device firmware running the shared LVGL UI on the RP2350 panel.
+          firmware-ui = pkgs.stdenv.mkDerivation {
+            pname = "rp2350-lcd-ingest-ui";
+            version = "0.1.0";
+            src = ./.;
+            nativeBuildInputs = [
+              pkgs.cmake pkgs.python3 pkgs.gcc-arm-embedded pkgs.picotool
+            ];
+            dontUseCmakeConfigure = true;  # let the Pico SDK cross toolchain win
+            buildPhase = ''
+              runHook preBuild
+              export PICO_SDK_PATH=${picoSdk}/lib/pico-sdk
+              cmake -B build -S device \
+                -DPICO_BOARD=pico2 \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DLVGL_DIR=${lvgl} \
+                -Dpicotool_DIR=${pkgs.picotool}/lib/cmake/picotool
+              cmake --build build -j"$NIX_BUILD_CORES"
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out
+              cp build/firmware.uf2 build/firmware.elf $out/
+              runHook postInstall
+            '';
+            meta.description = "LVGL ingest-display firmware for Waveshare RP2350-LCD-1.47";
+          };
+
           # Desktop simulator: the exact LVGL UI in an SDL window.
           sim = pkgs.stdenv.mkDerivation {
             pname = "ingest-sim";
@@ -79,8 +108,8 @@
           };
         in
         {
-          inherit firmware sim;
-          default = firmware;
+          inherit firmware firmware-ui sim;
+          default = firmware-ui;
         });
 
       apps = forAllSystems (pkgs:
@@ -91,16 +120,20 @@
           # Host-side sender: any image -> letterboxed 172x320 RGB565 -> serial.
           pythonEnv = pkgs.python3.withPackages (ps: [ ps.pillow ps.pyserial ]);
 
-          flash = pkgs.writeShellApplication {
-            name = "flash";
+          firmware-ui = self.packages.${system}.firmware-ui;
+
+          mkFlash = name: fw: pkgs.writeShellApplication {
+            inherit name;
             runtimeInputs = [ pkgs.picotool ];
             text = ''
               # Put the board in BOOTSEL (hold BOOT while plugging in) OR rely on
               # picotool -f to reboot a running board that exposes the reset iface.
-              echo "Flashing ${firmware}/firmware.uf2 ..."
-              picotool load -f -x "${firmware}/firmware.uf2"
+              echo "Flashing ${fw}/firmware.uf2 ..."
+              picotool load -f -x "${fw}/firmware.uf2"
             '';
           };
+          flash = mkFlash "flash" firmware-ui;             # the LVGL UI firmware
+          flash-image = mkFlash "flash-image" firmware;    # legacy image firmware
 
           send = pkgs.writeShellApplication {
             name = "send";
@@ -112,9 +145,35 @@
         in
         {
           flash = { type = "app"; program = "${flash}/bin/flash"; };
+          flash-image = { type = "app"; program = "${flash-image}/bin/flash-image"; };
           send = { type = "app"; program = "${send}/bin/send"; };
           sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
           default = self.apps.${system}.sim;
+        });
+
+      # Mock-driven tests. `nix flake check` runs them.
+      checks = forAllSystems (pkgs:
+        let system = pkgs.stdenv.hostPlatform.system;
+        in {
+          # Unit test: feed fake serial lines to the parser, assert the model.
+          proto = pkgs.runCommandCC "test-proto" { } ''
+            gcc -I ${./app} ${./tests/test_proto.c} ${./app/proto.c} \
+              -O1 -Wall -Wextra -o test
+            ./test
+            touch $out
+          '';
+
+          # Integration test: mock a serial feed through the real LVGL sim and
+          # assert it rendered a non-blank frame (headless snapshot).
+          sim-render = pkgs.runCommand "test-sim-render"
+            { nativeBuildInputs = [ pkgs.python3 ]; } ''
+              printf '%s\n' 'bg 202020' 'numbers 1' \
+                'slot 0 238000 900 active 300 22c35e 200 0072b2 250 e69f00 0 0 SAND' \
+                'slot 1 128000 60 active 500 22c35e 0 0 0 0 0 0 CARD2' \
+                | ${self.packages.${system}.sim}/bin/ingest-sim --shot 400 out.ppm
+              python3 ${./tests/check_ppm.py} out.ppm
+              touch $out
+            '';
         });
 
       devShells = forAllSystems (pkgs:

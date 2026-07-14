@@ -91,3 +91,11 @@ running order-of-events of *why things changed*.
     `INGEST_PLAN.md`; a Fable subagent reviewed the architecture doc and caught
     over-claims (device LVGL firmware / host feeder / copier are *planned*, not
     built) — corrected to mark built vs legacy vs planned honestly.
+31. **Device firmware ported** (`device/`): the shared `app/` UI now runs on the
+    RP2350 via LVGL, driving the ST7789 in VERTICAL scan (landscape 320×172, no
+    LVGL rotation) with an RGB565 byte-swap in the flush. `nix build
+    .#firmware-ui`; built, flashed, and driven over serial. The WSI1 image
+    firmware is kept as `flash-image`.
+32. **Mock-driven tests** (`tests/`, `nix flake check`): proto unit test (fake
+    serial lines → asserted model) + sim-render integration (mock feed → real
+    LVGL → non-blank frame, headless).

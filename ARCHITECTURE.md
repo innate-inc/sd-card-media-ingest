@@ -27,9 +27,10 @@ the tree, to be replaced; **planned** = designed, not yet code.
 
 | Component | Where | Status | In short |
 |-----------|-------|--------|----------|
-| **Shared UI core** | `app/` | built | Portable C: `model` (slots + segments), `proto` (parse the serial line protocol), `ui` (LVGL widgets). Currently compiled into the **simulator only**. |
+| **Shared UI core** | `app/` | built | Portable C: `model` (slots + segments), `proto` (parse the serial line protocol), `ui` (LVGL widgets). Compiled unchanged into **both** the device firmware and the simulator. |
 | **Simulator** | `sim/` | built | The `app/` UI in an SDL desktop window; stdin stands in for the serial link. `nix run .#sim`. `--shot` renders headless for tests. |
-| **Device firmware (LVGL)** | `firmware/` | **planned** | Will run the same `app/` UI via LVGL on the RP2350/ST7789 and read the line protocol over USB-CDC. **Today `firmware/` still holds the earlier WSI1 image-display firmware** (receives full RGB565 frames, replies `OK`); it does not use `app/` or the line protocol yet. |
+| **Device firmware (LVGL)** | `device/` | built | Runs the same `app/` UI via LVGL on the RP2350/ST7789 (VERTICAL scan = landscape 320×172, RGB565 byte-swapped in the flush), reading the line protocol over USB-CDC. `nix build .#firmware-ui` → uf2; `nix run .#flash`. The earlier WSI1 image firmware lives on in `firmware/` (`nix run .#flash-image`). |
+| **Tests** | `tests/` | built | `nix flake check`: a proto unit test (mock serial lines → asserted model) and a sim-render integration test (mock feed → real LVGL → non-blank frame). |
 | **Host feeder / server** | `host/` | **planned** | Will discover readers behind the hub in physical order, run the copier, and emit the line protocol. **Today `host/` holds the superseded display driver** (`ingest_display.py`: JSON-on-stdin → PIL → WSI1 frames — a *different* protocol) plus `send_image.py`/`wire.py`. |
 | **Copier** | `host/` | **planned** | Per card: copy → hash-verify → manifest → await human confirmation → wipe. See `INGEST_PLAN.md`. |
 
@@ -94,7 +95,7 @@ Not yet implemented; see `INGEST_PLAN.md`.
 
 ### Device firmware
 - Fixed behaviour, no config file. Renders whatever the protocol says.
-- Landscape 320×172 (the 172×320 panel rotated 90°).
+- Landscape 320×172 (panel driven in Waveshare VERTICAL scan; no LVGL rotation).
 - Shows up to **4 columns per page**; if more slots arrive it **cycles pages**
   (~4 s). Each column's label **toggles every 2 s** between "slot# name" and
   "ETA + size". Top-left **heartbeat pixel** blinks on each received line.
