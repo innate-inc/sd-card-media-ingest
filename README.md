@@ -133,14 +133,14 @@ repo at a stable path, since the units point at it.
 
 ## Browse the backups in a browser
 
-`nix run .#browse` serves a **read-only** web listing of any remote or path —
+`rclone serve http` gives a **read-only** web listing of any remote or path —
 browse and download, no delete. To see **local + cloud in one view**, make a
 `combine` remote that merges the local dest with the bucket, then serve it:
 
 ```bash
 nix run .#rclone -- config create both combine \
     upstreams "local=/media/.../ingest remote=b2:my-bucket/ingest"
-nix run .#browse -- both: --addr :8080          # http://<box>:8080
+nix run .#rclone -- serve http both: --addr :8080     # http://<box>:8080
 ```
 
 Add `--user U --pass P` for basic auth; bind to your LAN, not the public
