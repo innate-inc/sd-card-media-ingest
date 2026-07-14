@@ -20,7 +20,9 @@ path_prefix = "pci-0000:00:14.0-usb-0:2"
 base = "/media/jetson1/jetson_backup/ingest/"   # files land in base/<uuid>/<date>/
 
 [hash]
-algo = "md5"                   # cheapest hashlib algo; a copy check, not crypto
+algo = "sha1"                  # common hash across Google Drive + Backblaze B2
+                               # (so the remote can be verified from metadata,
+                               # no download). rclone hash name; upper-cased.
 
 [segments]
 # Meaning -> colour for the stacked bars; the host computes the permilles.

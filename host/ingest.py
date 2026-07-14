@@ -75,19 +75,19 @@ def main():
                     help="exit after N ticks (0 = run forever); for tests")
     ap.add_argument("--auto-confirm", type=float, default=0, metavar="S",
                     help="[dry-run only] auto-confirm a pending slot after S s")
-    ap.add_argument("--enable-wipe", action="store_true",
-                    help="really delete on confirm (also needs [wipe] enabled)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
     if args.interval_ms is not None:           # honour an explicit 0, too
         cfg["poll"]["interval_ms"] = args.interval_ms
 
-    # Real deletion needs the config flag AND the CLI flag, and never in dry run.
-    wipe_armed = (as_bool(cfg["wipe"].get("enabled", False)) and args.enable_wipe
+    # Real deletion needs BOTH the config flag and the INGEST_ENABLE_WIPE env
+    # var (so a systemd unit arms it without CLI args), and never in dry run.
+    enable_wipe = as_bool(os.environ.get("INGEST_ENABLE_WIPE", ""))
+    wipe_armed = (as_bool(cfg["wipe"].get("enabled", False)) and enable_wipe
                   and not args.dry_run)
-    if args.enable_wipe and not wipe_armed:
-        print("ingest: --enable-wipe ignored ([wipe] enabled is false%s)"
+    if enable_wipe and not wipe_armed:
+        print("ingest: INGEST_ENABLE_WIPE ignored ([wipe] enabled is false%s)"
               % (" / dry-run" if args.dry_run else ""), file=sys.stderr)
 
     if args.dry_run:

@@ -72,15 +72,15 @@ class JobTest(unittest.TestCase):
         for rel, data in self.files.items():
             with open(os.path.join(j.dest, rel), "rb") as fh:
                 self.assertEqual(fh.read(), data)
-        # manifest records all files with correct hashes
-        with open(j.manifest_path()) as fh:
-            m = json.load(fh)
-        self.assertEqual(m["uuid"], "UUID-01")
-        self.assertEqual({f["path"] for f in m["files"]}, set(self.files))
+        # <ALGO>SUMS receipt: a 'hash  relpath' line per file, correct hashes
         algo = self.cfg["hash"]["algo"]
-        for f in m["files"]:
-            self.assertEqual(
-                f["hash"], hashlib.new(algo, self.files[f["path"]]).hexdigest())
+        sums = {}
+        with open(j.manifest_path()) as fh:
+            for line in fh:
+                h, name = line.rstrip("\n").split(None, 1)
+                sums[name] = h
+        for rel, data in self.files.items():
+            self.assertEqual(sums.get(rel), hashlib.new(algo, data).hexdigest())
 
     def test_dest_is_a_dated_dir(self):
         j = self.job()
@@ -102,10 +102,10 @@ class JobTest(unittest.TestCase):
     def test_hash_mismatch_errors_and_keeps_everything(self):
         j = self.job()
         j.scan()
-        j.copy_all()
+        j.copy()
         with open(os.path.join(j.dest, "note.txt"), "wb") as fh:
             fh.write(b"HELLO")             # corrupt the copy before verification
-        self.assertRaises(Abort, j.verify_all)
+        self.assertRaises(Abort, j.verify)
         self.assertEqual(j.state, ERROR)
         self.assertEqual(j.error, "HASH FAIL")
         self.assertFalse(os.path.exists(j.manifest_path()))  # no manifest
@@ -115,7 +115,7 @@ class JobTest(unittest.TestCase):
     def test_no_manifest_until_verified(self):
         j = self.job()
         j.scan()
-        j.copy_all()
+        j.copy()
         self.assertFalse(os.path.exists(j.manifest_path()))
 
     def test_confirm_refused_unless_pending(self):

@@ -7,7 +7,7 @@ DEFAULTS = {
     "serial": {"vid": "2e8a", "pid": ""},   # "" vid+pid = stdout/stdin pipe mode
     "hub": {"path_prefix": ""},             # /dev/disk/by-path prefix of the hub
     "dest": {"base": "/media/jetson1/jetson_backup/ingest/"},  # base/<uuid>/<date>/
-    "hash": {"algo": "md5"},                # cheapest hashlib algo; a copy check
+    "hash": {"algo": "sha1"},               # the common hash across Drive + B2
     "segments": {
         # Okabe-Ito-ish, colourblind-safe; meanings are the host's to assign.
         "uploaded": "#22C35E",   # copied AND verified (manifest-backed)

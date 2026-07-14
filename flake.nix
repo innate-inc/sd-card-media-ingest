@@ -93,7 +93,7 @@
           # `--dry-run` runs the full pipeline over fake cards, no hardware.
           ingest = pkgs.writeShellApplication {
             name = "ingest";
-            runtimeInputs = [ pythonEnv ];
+            runtimeInputs = [ pythonEnv pkgs.rclone ];   # rclone does copy+verify
             text = ''
               exec python ${./host}/ingest.py "$@"
             '';
@@ -121,7 +121,7 @@
           # Unit test: the ingest daemon's copier + emitter over a fake card
           # tree (verify-before-manifest, dry-run wipe, line grammar).
           ingest-unit = pkgs.runCommand "test-ingest-unit"
-            { nativeBuildInputs = [ pkgs.python3 ]; } ''
+            { nativeBuildInputs = [ pkgs.python3 pkgs.rclone ]; } ''
               mkdir host tests
               cp ${./host}/ingest*.py host/
               cp ${./tests/test_ingest.py} tests/test_ingest.py
@@ -132,7 +132,7 @@
           # End-to-end: the REAL daemon (dry-run discovery + real copier) feeds
           # the REAL sim; assert the frame rendered (same check as sim-render).
           ingest-render = pkgs.runCommand "test-ingest-render"
-            { nativeBuildInputs = [ pkgs.python3 ]; } ''
+            { nativeBuildInputs = [ pkgs.python3 pkgs.rclone ]; } ''
               python3 ${./host}/ingest.py --dry-run --interval-ms 100 --ticks 30 \
                 | ${self.packages.${system}.sim}/bin/ingest-sim --shot 800 out.ppm
               python3 ${./tests/check_ppm.py} out.ppm
