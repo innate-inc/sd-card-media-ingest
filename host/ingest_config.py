@@ -9,12 +9,13 @@ DEFAULTS = {
     "dest": {"base": "/media/jetson1/jetson_backup/ingest/"},  # base/<uuid>/<date>/
     "hash": {"algo": "sha1"},               # the common hash across Drive + B2
     "segments": {
-        # Okabe-Ito-ish, colourblind-safe; meanings are the host's to assign.
-        "uploaded": "#22C35E",   # copied AND verified (manifest-backed)
-        "copied": "#0072B2",     # copied, not yet verified
-        "uncopied": "#E69F00",   # still only on the card
-        "empty": "#202020",      # free space on the card (the `bg` colour)
-        "numbers": True,
+        # Okabe-Ito, colourblind-safe; the stages the bar climbs through.
+        "uncopied": "#E69F00",   # orange - still only on the card
+        "copied":   "#F0E442",   # yellow - copied to local disk, not verified
+        "verified": "#0072B2",   # blue   - hash-verified local copy
+        "uploaded": "#009E73",   # green  - pushed to the cloud remote
+        "empty":    "#202020",   # bg / free space
+        "numbers":  True,
     },
     "poll": {"interval_ms": 500},
     "wipe": {"enabled": False},              # real deletion also needs the env var

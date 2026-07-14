@@ -26,11 +26,31 @@ import tempfile
 import threading
 import time
 
-# The receipt filename is derived from the hash algo (e.g. SHA1SUMS); its
-# presence in a dir is also the "this ingest is verified" marker the uploader
-# looks for. Format is `<hash>  <path>` per line -- `sha1sum -c`-able.
+# The receipt filename is derived from the hash algo (e.g. SHA1SUMS). Format is
+# `<hash>  <path>` per line -- `sha1sum -c`-able.
 def manifest_name(algo):
     return algo.upper() + "SUMS"
+
+# Per-ingest state file: written by the copier when an ingest verifies, then
+# updated by the uploader when it's pushed. Its `state` is the source of truth
+# ("verified" -> "uploaded") and `uploaded_bytes` drives the display's green.
+METADATA = "metadata.json"
+
+
+def read_metadata(d):
+    try:
+        with open(os.path.join(d, METADATA)) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def write_metadata(d, meta):
+    tmp = os.path.join(d, METADATA + ".tmp")
+    with open(tmp, "w") as fh:
+        json.dump(meta, fh, indent=1)
+        fh.write("\n")
+    os.replace(tmp, os.path.join(d, METADATA))   # atomic; readers never tear
 
 # Job states (superset of the protocol's status values).
 IDLE, COPYING, VERIFYING, PENDING, WIPING, EMPTY, ERROR = (
@@ -57,6 +77,7 @@ class CardJob:
         self.total_bytes = 0
         self.copied_bytes = 0
         self.verified_bytes = 0
+        self.uploaded_bytes = 0               # filled from metadata.json (uploader)
         self.dest = _dated_dir(cfg["dest"]["base"], card.uuid)
         self._files = []                      # (relpath, size)
         self._src_meta = {}                   # relpath -> (size, mtime_ns) at scan
@@ -78,6 +99,13 @@ class CardJob:
             self.verify()
             self.write_manifest()
             self.verified_bytes = self.total_bytes
+            write_metadata(self.dest, {
+                "uuid": self.card.uuid, "label": self.card.label,
+                "ingest_date": os.path.basename(self.dest), "algo": self.algo,
+                "files": len(self._files), "total_bytes": self.total_bytes,
+                "verified_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "state": "verified", "uploaded_bytes": 0,
+            })
             self.state = PENDING              # wait for a human's confirm
         except Abort:
             if self.state != ERROR:

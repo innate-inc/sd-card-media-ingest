@@ -108,11 +108,29 @@
               exec python3 ${./host}/uploader.py "$@"
             '';
           };
+
+          # Install the ingest + uploader systemd units (binary paths baked in)
+          # and a starter /etc/ingest.toml. Uses the system's sudo/systemctl.
+          install-service = pkgs.writeShellScriptBin "install-service" ''
+            set -eu
+            echo "Installing ingest + uploader systemd units (uses sudo)..."
+            sed "s|@INGEST@|${ingest}/bin/ingest|" ${./deploy/ingest.service} \
+              | sudo tee /etc/systemd/system/ingest.service >/dev/null
+            sed "s|@UPLOADER@|${uploader}/bin/uploader|" ${./deploy/uploader.service} \
+              | sudo tee /etc/systemd/system/uploader.service >/dev/null
+            if [ ! -f /etc/ingest.toml ]; then
+              sudo cp ${./host/ingest.toml} /etc/ingest.toml
+              echo "Wrote /etc/ingest.toml -- edit [dest] base, [remote] base, [wipe] enabled."
+            fi
+            sudo systemctl daemon-reload
+            echo "Installed. Start with:  sudo systemctl enable --now ingest uploader"
+          '';
         in
         {
           flash = { type = "app"; program = "${flash}/bin/flash"; };
           ingest = { type = "app"; program = "${ingest}/bin/ingest"; };
           uploader = { type = "app"; program = "${uploader}/bin/uploader"; };
+          install-service = { type = "app"; program = "${install-service}/bin/install-service"; };
           sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
           default = self.apps.${system}.sim;
         });

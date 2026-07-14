@@ -196,6 +196,7 @@ class EmitterTest(unittest.TestCase):
         job.total_bytes = 9_000_000_000
         job.copied_bytes = 5_000_000_000
         job.verified_bytes = 2_000_000_000
+        job.uploaded_bytes = 1_000_000_000
         em.tick([job, None])
         lines = out.getvalue().splitlines()
 
@@ -206,41 +207,47 @@ class EmitterTest(unittest.TestCase):
         m = SLOT_RE.match(slots[0])
         self.assertEqual(int(m.group(2)), 10_000)      # size_mb
         nums = [int(x) for x in slots[0].split()[5:12:2]]
-        self.assertEqual(nums, [200, 300, 400, 0])     # up/cop/unc/unused
+        # relative to the card's own 10 GB: uploaded/verified/copied/uncopied
+        self.assertEqual(nums, [100, 100, 300, 400])
         self.assertLessEqual(sum(nums), 1000)          # relative scale
         self.assertLessEqual(len(m.group(6)), 23)      # MAX_LABEL - 1
         self.assertEqual(slots[1], "slot 1 -1 -1 idle 0 0 0 0 0 0 0 0 empty")
         self.assertIn("hb", lines)
         self.assertTrue(any(l.startswith("path 0 ") for l in lines))
         self.assertIn("bg 202020", lines)
-        self.assertEqual(sum(l.startswith("legend ") for l in lines), 5)
+        # legend clear + 5 rows (uploaded/verified/copied/uncopied/free space)
+        self.assertEqual(sum(l.startswith("legend ") for l in lines), 6)
 
 
 class UploaderTest(unittest.TestCase):
     def test_upload_verifies_against_remote_and_marks_done(self):
         import subprocess
         import uploader
-        from ingest_copier import manifest_name
+        from ingest_copier import manifest_name, read_metadata, write_metadata
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         base = os.path.join(tmp.name, "dest")
         remote = os.path.join(tmp.name, "remote")   # local dir stands in for cloud
         d = os.path.join(base, "UUID-01", "2026-07-14_00-00-00")
         make_card(d, {"DCIM/IMG.JPG": b"x" * 2000, "note.txt": b"hi"})
-        # the ingest daemon's receipt (written outside d, then moved in)
+        # receipt (written outside d, then moved in) + metadata, like the daemon
         sums = os.path.join(tmp.name, "sums")
         with open(sums, "w") as fo:
             subprocess.run(["rclone", "sha1sum", d], stdout=fo,
                            stderr=subprocess.DEVNULL, check=True)
         os.replace(sums, os.path.join(d, manifest_name("sha1")))
-        os.makedirs(os.path.join(base, "UUID-02", "d"))  # no receipt -> ignored
+        write_metadata(d, {"state": "verified", "total_bytes": 2002,
+                           "uploaded_bytes": 0})
+        os.makedirs(os.path.join(base, "UUID-02", "d"))  # no metadata -> ignored
 
-        self.assertEqual(list(uploader.ready_dirs(base, manifest_name("sha1"))), [d])
+        self.assertEqual(list(uploader.ready_dirs(base)), [d])
         self.assertTrue(uploader.upload_dir(d, base, remote, "sha1"))
 
         rd = os.path.join(remote, "UUID-01", "2026-07-14_00-00-00")
         self.assertTrue(os.path.exists(os.path.join(rd, "note.txt")))
-        self.assertTrue(os.path.exists(os.path.join(d, ".uploaded")))
+        meta = read_metadata(d)
+        self.assertEqual(meta["state"], "uploaded")
+        self.assertEqual(meta["uploaded_bytes"], 2002)
         # the proof: remote's own hashes match what we ingested
         loc = {l.split()[1]: l.split()[0]
                for l in open(os.path.join(d, "SHA1SUMS"))}
@@ -248,8 +255,8 @@ class UploaderTest(unittest.TestCase):
                for l in open(os.path.join(d, "REMOTE_SHA1SUMS"))}
         for f in ("DCIM/IMG.JPG", "note.txt"):
             self.assertEqual(loc[f], rem[f])
-        # already uploaded -> not offered again
-        self.assertEqual(list(uploader.ready_dirs(base, manifest_name("sha1"))), [])
+        # uploaded -> not offered again
+        self.assertEqual(list(uploader.ready_dirs(base)), [])
 
 
 if __name__ == "__main__":

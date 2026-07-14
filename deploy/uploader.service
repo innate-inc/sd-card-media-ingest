@@ -1,0 +1,14 @@
+[Unit]
+Description=SD-card ingest uploader (push verified ingests to the cloud, rclone)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# @UPLOADER@ is substituted with the nix-built binary by `nix run .#install-service`.
+ExecStart=@UPLOADER@ --config /etc/ingest.toml --interval 60
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

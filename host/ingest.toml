@@ -25,12 +25,13 @@ algo = "sha1"                  # common hash across Google Drive + Backblaze B2
                                # no download). rclone hash name; upper-cased.
 
 [segments]
-# Meaning -> colour for the stacked bars; the host computes the permilles.
-uploaded = "#22C35E"           # copied AND verified (manifest written)
-copied = "#0072B2"             # copied, awaiting verification
-uncopied = "#E69F00"           # still only on the card
-empty = "#202020"              # free space (the protocol `bg` colour)
-numbers = true                 # per-segment GB numbers on the bars
+# Okabe-Ito, colourblind-safe. The four pipeline stages the bar climbs through.
+uncopied = "#E69F00"           # orange - still only on the card
+copied   = "#F0E442"           # yellow - copied to local disk, not verified
+verified = "#0072B2"           # blue   - hash-verified local copy
+uploaded = "#009E73"           # green  - pushed to the cloud remote
+empty    = "#202020"           # bg / free space
+numbers  = true                # per-segment GB numbers on the bars
 
 [poll]
 interval_ms = 500              # discovery + display tick; also the hb period

@@ -1,0 +1,16 @@
+[Unit]
+Description=SD-card ingest station (discover -> copy -> verify -> wipe on confirm)
+After=local-fs.target
+
+[Service]
+Type=simple
+# @INGEST@ is substituted with the nix-built binary by `nix run .#install-service`.
+ExecStart=@INGEST@ --config /etc/ingest.toml
+Restart=on-failure
+RestartSec=5
+# SAFETY: real deletion ALSO needs [wipe] enabled = true in /etc/ingest.toml.
+# Uncomment to arm it (otherwise a confirmed wipe only logs what it would delete):
+# Environment=INGEST_ENABLE_WIPE=1
+
+[Install]
+WantedBy=multi-user.target

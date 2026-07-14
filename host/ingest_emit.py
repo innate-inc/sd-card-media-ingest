@@ -20,9 +20,10 @@ _STATUS = {IDLE: "idle", COPYING: "active", VERIFYING: "active",
 class Emitter:
     def __init__(self, out, seg_cfg):
         self.out = out
-        self.up = color(seg_cfg["uploaded"])
-        self.cop = color(seg_cfg["copied"])
-        self.unc = color(seg_cfg["uncopied"])
+        self.uncopied = color(seg_cfg["uncopied"])
+        self.copied = color(seg_cfg["copied"])
+        self.verified = color(seg_cfg["verified"])
+        self.uploaded = color(seg_cfg["uploaded"])
         self.bg = color(seg_cfg["empty"])
         self.numbers = 1 if as_bool(seg_cfg.get("numbers", True)) else 0
         self._paths = {}                       # last `path` sent per slot
@@ -62,9 +63,10 @@ class Emitter:
         self.emit("bg %06x" % self.bg)
         self.emit("numbers %d" % self.numbers)
         self.emit("legend clear")
-        self.emit("legend %06x uploaded" % self.up)
-        self.emit("legend %06x copied" % self.cop)
-        self.emit("legend %06x uncopied" % self.unc)
+        self.emit("legend %06x uploaded" % self.uploaded)
+        self.emit("legend %06x verified" % self.verified)
+        self.emit("legend %06x copied" % self.copied)
+        self.emit("legend %06x uncopied" % self.uncopied)
         self.emit("legend %06x free space" % self.bg)
 
     def tick(self, jobs):
@@ -88,9 +90,11 @@ class Emitter:
     def _slot_line(self, i, job):
         cap = max(job.card.capacity_bytes, 1)
         pm = lambda b: max(0, min(1000, round(b * 1000 / cap)))
-        up = pm(job.verified_bytes)
-        cop = pm(job.copied_bytes - job.verified_bytes)
-        unc = pm(job.total_bytes - job.copied_bytes)
+        # four stacked stages, most-done at the bottom (p0):
+        uploaded = pm(job.uploaded_bytes)
+        verified = pm(job.verified_bytes - job.uploaded_bytes)
+        copied = pm(job.copied_bytes - job.verified_bytes)
+        uncopied = pm(job.total_bytes - job.copied_bytes)
         size_mb = cap // 1_000_000
         status = _STATUS.get(job.state, "idle")
         if job.state == WIPING:
@@ -100,6 +104,7 @@ class Emitter:
         else:
             label = job.card.label
         # eta is -1 (unknown): the device just shows the name/size label.
-        return ("slot %d %d -1 %s %d %06x %d %06x %d %06x 0 0 %s"
-                % (i, size_mb, status, up, self.up, cop, self.cop,
-                   unc, self.unc, label[:23]))
+        return ("slot %d %d -1 %s %d %06x %d %06x %d %06x %d %06x %s"
+                % (i, size_mb, status, uploaded, self.uploaded,
+                   verified, self.verified, copied, self.copied,
+                   uncopied, self.uncopied, label[:23]))
