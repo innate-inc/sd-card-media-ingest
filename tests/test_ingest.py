@@ -28,7 +28,7 @@ from ingest_emit import Emitter
 
 # What app/proto.c's sscanf accepts for a slot line (4 pairs mandatory).
 SLOT_RE = re.compile(
-    r"^slot (\d+) (-?\d+) (-?\d+) (idle|active|done|error|paused|pending)"
+    r"^slot (\d+) (-?\d+) (-?\d+) (-?\d+) (idle|active|done|error|paused|pending)"
     r"( \d+ [0-9a-f]{1,6}){4} (.*)$")
 
 
@@ -206,12 +206,12 @@ class EmitterTest(unittest.TestCase):
             self.assertRegex(l, SLOT_RE)
         m = SLOT_RE.match(slots[0])
         self.assertEqual(int(m.group(2)), 10_000)      # size_mb
-        nums = [int(x) for x in slots[0].split()[5:12:2]]
+        nums = [int(x) for x in slots[0].split()[6:14:2]]
         # relative to the card's own 10 GB: uploaded/verified/copied/uncopied
         self.assertEqual(nums, [100, 100, 300, 400])
         self.assertLessEqual(sum(nums), 1000)          # relative scale
-        self.assertLessEqual(len(m.group(6)), 23)      # MAX_LABEL - 1
-        self.assertEqual(slots[1], "slot 1 -1 -1 idle 0 0 0 0 0 0 0 0 empty")
+        self.assertLessEqual(len(m.group(7)), 23)      # MAX_LABEL - 1
+        self.assertEqual(slots[1], "slot 1 -1 -1 -1 idle 0 0 0 0 0 0 0 0 empty")
         self.assertIn("hb", lines)
         self.assertTrue(any(l.startswith("path 0 ") for l in lines))
         self.assertIn("bg 202020", lines)
@@ -232,7 +232,7 @@ class EmitterTest(unittest.TestCase):
         out.truncate(0); out.seek(0)
         em.tick([job])                          # column 1's card removed
         lines = out.getvalue().splitlines()
-        self.assertIn("slot 1 -1 -1 idle 0 0 0 0 0 0 0 0 empty", lines)
+        self.assertIn("slot 1 -1 -1 -1 idle 0 0 0 0 0 0 0 0 empty", lines)
         out.truncate(0); out.seek(0)
         em.tick([job])                          # already cleared -> not re-sent
         self.assertNotIn("slot 1", out.getvalue())

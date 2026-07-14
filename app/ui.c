@@ -82,6 +82,13 @@ static void fmt_gb(char *buf, size_t n, double gb) {
     else snprintf(buf, n, "%.1fG", gb);
 }
 
+static void fmt_mbps(char *buf, size_t n, int kbps) {
+    if (kbps < 0) { buf[0] = '\0'; return; }
+    double mb = kbps / 1000.0;                 /* KB/s -> MB/s (decimal) */
+    if (mb >= 10) snprintf(buf, n, "%.0fMB/s", mb);
+    else snprintf(buf, n, "%.1fMB/s", mb);
+}
+
 /* The legend, when the server sends one, is the leftmost page (page 0);
  * card pages follow it. */
 static int has_legend(void) { return g.model.nlegend > 0; }
@@ -169,6 +176,18 @@ static void draw_detail(void) {
         char gb[16];
         fmt_gb(gb, sizeof gb, s->size_mb / 1000.0);
         o += snprintf(body + o, sizeof body - o, "total %s\n", gb);
+        BODY_CLAMP();
+    }
+    if (s->kbps >= 0) {
+        char spd[16];
+        fmt_mbps(spd, sizeof spd, s->kbps);
+        o += snprintf(body + o, sizeof body - o, "speed %s\n", spd);
+        BODY_CLAMP();
+    }
+    if (s->eta_s >= 0) {
+        char eta[16];
+        fmt_eta(eta, sizeof eta, s->eta_s);
+        o += snprintf(body + o, sizeof body - o, "eta %s\n", eta);
         BODY_CLAMP();
     }
     int filled = 0;
@@ -333,11 +352,14 @@ static void refresh(void) {
 
         char buf[48];
         if (g.phase == 1) {
-            char eta[16], size[16];
+            char eta[16], size[16], spd[16];
             fmt_eta(eta, sizeof eta, s->eta_s);
+            fmt_mbps(spd, sizeof spd, s->kbps);
             if (s->size_mb >= 0) fmt_gb(size, sizeof size, s->size_mb / 1000.0);
             else size[0] = '\0';
             if (s->status == ST_DONE) snprintf(buf, sizeof buf, "done");
+            /* while copying, show ETA + speed; otherwise fall back to size */
+            else if (eta[0] && spd[0]) snprintf(buf, sizeof buf, "%s %s", eta, spd);
             else if (eta[0] && size[0]) snprintf(buf, sizeof buf, "%s %s", eta, size);
             else if (eta[0] || size[0]) snprintf(buf, sizeof buf, "%s%s", eta, size);
             else snprintf(buf, sizeof buf, "%d %s", si + 1, s->label);

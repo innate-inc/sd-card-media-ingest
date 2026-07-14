@@ -68,7 +68,7 @@ hashing so it isn't mistaken for a dead link.
 | `legend <rrggbb> <text…>` | Append a colour→meaning row to the legend (up to `MAX_LEGEND = 6`). |
 | `legend clear` | Empty the legend (removes the legend page). |
 | `path <i> <text…>` | Optional per-slot detail (UUID / mount path) shown on the detail screen. |
-| `slot <i> <size_mb> <eta_s> <status> <p0> <c0> <p1> <c1> <p2> <c2> <p3> <c3> <label…>` | Define/update slot `i`. |
+| `slot <i> <size_mb> <eta_s> <kbps> <status> <p0> <c0> <p1> <c1> <p2> <c2> <p3> <c3> <label…>` | Define/update slot `i`. |
 
 Field meanings:
 
@@ -82,6 +82,9 @@ Field meanings:
 - `eta_s` — seconds to completion, `-1` = unknown (drives the ETA text). ETA
   phase shows `done` for status `done`, and falls back to "slot# name" if both
   eta and size are unknown.
+- `kbps` — copy speed in KB/s, `-1` = unknown. While copying, the ETA phase
+  shows "eta speed" (e.g. `5m 42MB/s`); the detail screen lists both. The host
+  smooths it (EMA) so it doesn't jump.
 - `status` — `idle｜active｜done｜error｜paused｜pending`. Currently only `done`
   changes rendering (ETA text). `pending` = verified, awaiting wipe confirmation
   — carried through the model but not yet visually distinct. (Status-based
@@ -105,7 +108,7 @@ Example tick for one card, 30% uploaded, 20% copied, 25% still on card:
 ```
 bg 202020
 numbers 1
-slot 0 238000 900 active 300 22c35e 200 0072b2 250 e69f00 0 0 SANDISK64
+slot 0 238000 900 42000 active 300 22c35e 200 0072b2 250 e69f00 0 0 SANDISK64
 ```
 
 ### Device → host

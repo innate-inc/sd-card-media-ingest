@@ -38,6 +38,7 @@ typedef struct {
     segment_t segs[MAX_SEGS];
     int32_t size_mb;     /* total size in MB, -1 = unknown (for numbers) */
     int32_t eta_s;       /* seconds to completion, -1 = unknown */
+    int32_t kbps;        /* copy speed in KB/s, -1 = unknown */
     slot_status_t status;
 } slot_t;
 

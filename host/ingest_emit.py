@@ -30,6 +30,7 @@ class Emitter:
         self.numbers = 1 if as_bool(seg_cfg.get("numbers", True)) else 0
         self._paths = {}                       # last `path` sent per column
         self._drawn = set()                    # columns with a bar drawn last tick
+        self._rate = {}                        # job.dest -> (t, copied_bytes, ema_bps)
         self._last_warn = 0.0
 
     def emit(self, line):
@@ -87,7 +88,7 @@ class Emitter:
             job = jobs[c] if c < n else None
             if job is None or job.state == EMPTY:
                 if c < n or c in self._drawn:      # in-range gap, or a freed column
-                    self.emit("slot %d -1 -1 idle 0 0 0 0 0 0 0 0 empty" % c)
+                    self.emit("slot %d -1 -1 -1 idle 0 0 0 0 0 0 0 0 empty" % c)
                 continue
             self._path(c, job)
             self.emit(self._slot_line(c, job))
@@ -119,6 +120,7 @@ class Emitter:
         copied = b_cop - b_ver
         uncopied = b_tot - b_cop
         size_mb = cap // 1_000_000
+        eta_s, kbps = self._eta_kbps(job)
         status = _STATUS.get(job.state, "idle")
         if job.state == WIPING:
             label = "WIPING"
@@ -126,8 +128,29 @@ class Emitter:
             label = job.error or "ERROR"
         else:
             label = job.card.label
-        # eta is -1 (unknown): the device just shows the name/size label.
-        return ("slot %d %d -1 %s %d %06x %d %06x %d %06x %d %06x %s"
-                % (i, size_mb, status, uploaded, self.uploaded,
+        return ("slot %d %d %d %d %s %d %06x %d %06x %d %06x %d %06x %s"
+                % (i, size_mb, eta_s, kbps, status, uploaded, self.uploaded,
                    verified, self.verified, copied, self.copied,
                    uncopied, self.uncopied, label[:23]))
+
+    def _eta_kbps(self, job):
+        """Smoothed copy rate -> (eta_s, kbps); (-1, -1) when not measurable.
+        Sampled at tick cadence from copied_bytes with an EMA so the numbers
+        don't jump around."""
+        if job.state != COPYING:
+            self._rate.pop(job.dest, None)
+            return -1, -1
+        now, done = time.monotonic(), job.copied_bytes
+        prev = self._rate.get(job.dest)
+        ema = 0.0
+        if prev:
+            last_t, last_bytes, last_ema = prev
+            dt = now - last_t
+            if dt > 0:
+                inst = max(0.0, (done - last_bytes) / dt)
+                ema = inst if last_ema <= 0 else last_ema * 0.6 + inst * 0.4
+        self._rate[job.dest] = (now, done, ema)
+        if ema <= 0:
+            return -1, -1
+        remaining = max(0, job.total_bytes - done)
+        return int(remaining / ema), int(ema / 1000)   # seconds, KB/s (decimal)

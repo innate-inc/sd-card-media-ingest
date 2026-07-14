@@ -90,18 +90,19 @@ proto_result_t proto_handle_line(model_t *m, const char *raw) {
         }
     }
 
-    int idx, size, eta, consumed = 0;
+    int idx, size, eta, kbps, consumed = 0;
     int p[MAX_SEGS];
     unsigned c[MAX_SEGS];
     char status[16];
-    if (sscanf(line, "slot %d %d %d %15s %d %x %d %x %d %x %d %x %n",
-               &idx, &size, &eta, status,
+    if (sscanf(line, "slot %d %d %d %d %15s %d %x %d %x %d %x %d %x %n",
+               &idx, &size, &eta, &kbps, status,
                &p[0], &c[0], &p[1], &c[1], &p[2], &c[2], &p[3], &c[3],
-               &consumed) >= 12) {
+               &consumed) >= 13) {
         if (idx < 0 || idx >= MAX_SLOTS) return r;
         slot_t *s = &m->slots[idx];
         s->size_mb = size;
         s->eta_s = eta;
+        s->kbps = kbps;
         s->status = parse_status(status);
         for (int k = 0; k < MAX_SEGS; k++) {
             int pm = p[k];

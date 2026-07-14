@@ -205,8 +205,8 @@
             { nativeBuildInputs = [ pkgs.python3 ]; } ''
               printf '%s\n' 'bg 202020' 'numbers 1' \
                 'legend 22c35e uploaded' 'legend e69f00 uncopied' \
-                'slot 0 238000 900 active 300 22c35e 200 0072b2 250 e69f00 0 0 SAND' \
-                'slot 1 128000 60 active 500 22c35e 0 0 0 0 0 0 CARD2' \
+                'slot 0 238000 900 42000 active 300 22c35e 200 0072b2 250 e69f00 0 0 SAND' \
+                'slot 1 128000 60 8500 active 500 22c35e 0 0 0 0 0 0 CARD2' \
                 | ${self.packages.${system}.sim}/bin/ingest-sim --shot 400 out.ppm
               python3 ${./tests/check_ppm.py} out.ppm
               touch $out
