@@ -1,0 +1,18 @@
+[Unit]
+Description=Browse the ingest backups over HTTP (rclone serve http)
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# @WORKDIR@ / @HTTP@ are substituted by `nix run .#install-service` (the project
+# dir it's run from, and the nix-built wrapper). Serves [http] target from
+# @WORKDIR@/ingest.toml; a "both:" combine remote shows local + cloud together.
+WorkingDirectory=@WORKDIR@
+ExecStart=@HTTP@
+Environment=RCLONE_CONFIG=@WORKDIR@/rclone.conf
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

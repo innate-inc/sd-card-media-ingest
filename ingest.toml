@@ -53,3 +53,13 @@ enabled = false
 #   base = "gdrive:ingest"            # Google Drive
 #   base = "/mnt/backup2/ingest"      # a second local disk
 base = ""
+
+[http]
+# The rclone-http service serves a read-only web listing (browse + download) of
+# `target` on `addr`. target = a local path or an rclone remote. To show local
+# AND cloud in one view, make a "combine" remote and point target at it:
+#   nix run .#rclone -- config create both combine \
+#       upstreams "local=/media/.../ingest remote=b2:my-bucket/ingest"
+#   target = "both:"
+target = "/media/jetson1/jetson_backup/ingest/"   # what to serve ("" = disabled)
+addr   = ":8080"                                  # http://<box>:8080 ; keep it on your LAN

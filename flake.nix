@@ -131,16 +131,53 @@
           # ./ingest.toml and ./rclone.conf. Uses the system's sudo/systemctl.
           install-service = pkgs.writeShellScriptBin "install-service" ''
             set -eu
+            prefix=innate-sd-ingester
             [ -f ./ingest.toml ] || echo "warning: no ./ingest.toml in $PWD" >&2
-            echo "Installing ingest + uploader units (config dir = $PWD; uses sudo)..."
-            for u in ingest uploader; do
+
+            render() {   # $1 = deploy source basename -> filled unit on stdout
               sed -e "s|@INGEST@|${ingest}/bin/ingest|" \
                   -e "s|@UPLOADER@|${uploader}/bin/uploader|" \
-                  -e "s|@WORKDIR@|$PWD|" ${./deploy}/$u.service \
-                | sudo tee /etc/systemd/system/$u.service >/dev/null
+                  -e "s|@HTTP@|${http}/bin/http|" \
+                  -e "s|@WORKDIR@|$PWD|" ${./deploy}/$1.service
+            }
+            state_of() {   # active | enabled | no  (for a unit, before we remove it)
+              if systemctl is-active  --quiet "$1.service" 2>/dev/null; then echo active
+              elif systemctl is-enabled --quiet "$1.service" 2>/dev/null; then echo enabled
+              else echo no; fi
+            }
+            carry() {   # re-apply the captured state to the new $prefix-$1 unit
+              case "$2" in
+                active)  sudo systemctl enable --now "$prefix-$1.service" ;;
+                enabled) sudo systemctl enable      "$prefix-$1.service" ;;
+              esac
+            }
+
+            # Migrate: remember whether the old (pre-rename) units ran, then stop
+            # + delete them so systemd can't keep a stale ExecStart alongside the
+            # new ones. (Add to this list if the unit names ever change again.)
+            ingest_was=$(state_of ingest)
+            uploader_was=$(state_of uploader)
+            http_was=$(state_of rclone-http)
+            for old in ingest uploader rclone-http; do
+              if [ -e /etc/systemd/system/$old.service ]; then
+                echo "migrating: removing old $old.service"
+                sudo systemctl disable --now "$old.service" 2>/dev/null || true
+                sudo rm -f /etc/systemd/system/$old.service
+              fi
             done
+
+            echo "Installing $prefix-{ingest,uploader,http} units (config dir = $PWD; uses sudo)..."
+            render ingest      | sudo tee /etc/systemd/system/$prefix-ingest.service   >/dev/null
+            render uploader    | sudo tee /etc/systemd/system/$prefix-uploader.service >/dev/null
+            render rclone-http | sudo tee /etc/systemd/system/$prefix-http.service     >/dev/null
             sudo systemctl daemon-reload
-            echo "Installed. Start with:  sudo systemctl enable --now ingest uploader"
+
+            # Carry the old run/enable state over so a rename doesn't silently
+            # leave the station stopped.
+            carry ingest   "$ingest_was"
+            carry uploader "$uploader_was"
+            carry http     "$http_was"
+            echo "Installed. If not already running: sudo systemctl enable --now $prefix-ingest $prefix-uploader $prefix-http"
           '';
 
           # rclone against the project's ./rclone.conf (gitignored -- it holds
@@ -154,6 +191,27 @@
               exec rclone "$@"
             '';
           };
+
+          # `rclone serve http`: a read-only web listing of the backups, browsed
+          # + downloaded over the LAN (the rclone-http service). target/addr come
+          # from [http] in ./ingest.toml. target is a local path or a remote
+          # (e.g. a "both:" combine remote to show local + cloud together).
+          http = pkgs.writeShellApplication {
+            name = "http";
+            runtimeInputs = [ pkgs.rclone ];
+            text = ''
+              export RCLONE_CONFIG="''${RCLONE_CONFIG:-$PWD/rclone.conf}"
+              val() { sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"?([^\"#]*[^\"# ]).*/\1/p" ingest.toml 2>/dev/null | head -1 || true; }
+              target="$(val target)"
+              addr="$(val addr)"; [ -n "$addr" ] || addr=":8080"
+              if [ -z "$target" ]; then
+                echo "http: set [http] target in ./ingest.toml (a path, or a combine remote like both:)" >&2
+                exit 1
+              fi
+              echo "rclone serve http: $target on $addr"
+              exec rclone serve http "$target" --addr "$addr" "$@"
+            '';
+          };
         in
         {
           flash = { type = "app"; program = "${flash}/bin/flash"; };
@@ -162,6 +220,7 @@
           slots = { type = "app"; program = "${slots}/bin/slots"; };
           install-service = { type = "app"; program = "${install-service}/bin/install-service"; };
           rclone = { type = "app"; program = "${rclone}/bin/rclone"; };
+          http = { type = "app"; program = "${http}/bin/http"; };
           sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
           default = self.apps.${system}.sim;
         });
