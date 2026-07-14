@@ -29,11 +29,10 @@ the tree, to be replaced; **planned** = designed, not yet code.
 |-----------|-------|--------|----------|
 | **Shared UI core** | `app/` | built | Portable C: `model` (slots + segments), `proto` (parse the serial line protocol), `ui` (LVGL widgets). Compiled unchanged into **both** the device firmware and the simulator. |
 | **Simulator** | `sim/` | built | The `app/` UI in an SDL desktop window; stdin stands in for the serial link and **SPACE** stands in for the board's button (hold = long press, ESC quits). `nix run .#sim`. `--shot` renders headless for tests. |
-| **Device firmware (LVGL)** | `device/` | built | Runs the same `app/` UI via LVGL on the RP2350/ST7789 (VERTICAL scan = landscape 320×172, RGB565 byte-swapped in the flush), reading the line protocol over USB-CDC. Reads the **BOOTSEL button** at runtime for on-device navigation and emits `confirm <i>` back to the host. `nix build .#firmware-ui` → uf2; `nix run .#flash`. The earlier WSI1 image firmware lives on in `firmware/` (`nix run .#flash-image`). |
+| **Device firmware (LVGL)** | `device/` | built | Runs the same `app/` UI via LVGL on the RP2350/ST7789 (VERTICAL scan = landscape 320×172, RGB565 byte-swapped in the flush), reading the line protocol over USB-CDC. Reads the **BOOTSEL button** at runtime for on-device navigation and emits `confirm <i>` back to the host. `nix build .#firmware-ui` → uf2; `nix run .#flash`. |
 | **Host ingest daemon** | `host/ingest.py` | built | Discovers readers behind the hub in physical order (`/dev/disk/by-path`), runs the copier, and emits the line protocol. `--dry-run` runs the full lifecycle over fake cards with no hardware — this is the canonical driver for the sim/board: `nix run .#ingest -- --dry-run \| nix run .#sim`. Stdlib only. |
 | **Copier** | `host/ingest.py` | built | Per card: copy → hash-verify → manifest → await `confirm <i>` → wipe. Wiping is a triple-guarded dry-run by default (see `INGEST_PLAN.md`). |
 | **Tests** | `tests/` | built | `nix flake check`: a `proto` unit test (serial lines → asserted model), `ingest-unit` (the daemon's copier/emitter/wipe-guards over a fake card tree), `ingest-render` (real daemon `--dry-run` → real LVGL → non-blank frame), and `sim-render` (a fixed serial feed → real LVGL → non-blank frame). |
-| **Legacy display driver** | `host/` | legacy | The superseded `ingest_display.py` (JSON-on-stdin → PIL → WSI1 frames — a *different* protocol) plus `send_image.py`/`wire.py`, kept for the WSI1 image firmware. |
 
 ## Protocol (host → device)
 

@@ -17,8 +17,8 @@ endif()
 
 include_directories(
   ${CMAKE_CURRENT_LIST_DIR}/../app
-  ${CMAKE_CURRENT_LIST_DIR}/../firmware/lib/Config
-  ${CMAKE_CURRENT_LIST_DIR}/../firmware/lib/LCD
+  ${CMAKE_CURRENT_LIST_DIR}/lib/Config
+  ${CMAKE_CURRENT_LIST_DIR}/lib/LCD
 )
 add_compile_definitions(LV_CONF_INCLUDE_SIMPLE)
 
@@ -35,8 +35,8 @@ add_executable(firmware
   main_device.c
   ${CMAKE_CURRENT_LIST_DIR}/../app/ui.c
   ${CMAKE_CURRENT_LIST_DIR}/../app/proto.c
-  ${CMAKE_CURRENT_LIST_DIR}/../firmware/lib/Config/DEV_Config.c
-  ${CMAKE_CURRENT_LIST_DIR}/../firmware/lib/LCD/LCD_1in47.c
+  ${CMAKE_CURRENT_LIST_DIR}/lib/Config/DEV_Config.c
+  ${CMAKE_CURRENT_LIST_DIR}/lib/LCD/LCD_1in47.c
 )
 
 pico_enable_stdio_usb(firmware 1)

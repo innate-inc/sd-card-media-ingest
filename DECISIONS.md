@@ -1,7 +1,8 @@
 # Decision log (chronological)
 
-Newest at the bottom. Topical rationale lives in `DESIGN.md`; this file is the
-running order-of-events of *why things changed*.
+Newest at the bottom; this file is the running order-of-events of *why things
+changed*. (Items 1–8 describe the original USB image-display firmware, since
+removed — see item 55.)
 
 ## Firmware & display foundation
 1. **Identified the board** via the Amazon listing (Chrome) + Waveshare wiki:
@@ -189,3 +190,16 @@ running order-of-events of *why things changed*.
     `copy_field()`. Synced `ARCHITECTURE.md`/`INGEST_PLAN.md`/`README.md`: host
     daemon now "built", nav table reflects the single 5 s hold (item 43), the
     heartbeat pixel is gone (item 44).
+
+## Simplify + prune
+55. **Daemon split + simplified; image stack deleted.** `host/ingest.py` was
+    split into `ingest_{config,discovery,copier,emit,link}.py` (the copier — the
+    only file that deletes — isolated at ~250 lines); dest layout is
+    `base/<uuid>/<ingest_date>/` so there's no resume/dedup/dup-claim logic;
+    hash algo defaulted to `md5`; serial found by USB VID/PID via pyserial (`[serial]`
+    `vid`/`pid`, not `port`). The original **WSI1 image-display stack is removed**
+    (items 1–8): `firmware/main.c` + its build, `host/{wire,send_image,ingest_display}.py`,
+    the `firmware`/`flash-image`/`send` flake outputs, and `DESIGN.md`. The
+    vendored Waveshare LCD driver moved `firmware/lib/` → `device/lib/` (the LVGL
+    device firmware still uses it). Supersedes the "kept as flash-image" note in
+    item 31.
