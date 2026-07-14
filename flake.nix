@@ -98,10 +98,21 @@
               exec python ${./host}/ingest.py "$@"
             '';
           };
+
+          # Separate uploader: push verified ingests to a cloud remote (rclone),
+          # decoupled from the ingest daemon. `--once` for a systemd timer.
+          uploader = pkgs.writeShellApplication {
+            name = "uploader";
+            runtimeInputs = [ pkgs.python3 pkgs.rclone ];
+            text = ''
+              exec python3 ${./host}/uploader.py "$@"
+            '';
+          };
         in
         {
           flash = { type = "app"; program = "${flash}/bin/flash"; };
           ingest = { type = "app"; program = "${ingest}/bin/ingest"; };
+          uploader = { type = "app"; program = "${uploader}/bin/uploader"; };
           sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
           default = self.apps.${system}.sim;
         });
@@ -123,7 +134,7 @@
           ingest-unit = pkgs.runCommand "test-ingest-unit"
             { nativeBuildInputs = [ pkgs.python3 pkgs.rclone ]; } ''
               mkdir host tests
-              cp ${./host}/ingest*.py host/
+              cp ${./host}/*.py host/
               cp ${./tests/test_ingest.py} tests/test_ingest.py
               python3 tests/test_ingest.py
               touch $out

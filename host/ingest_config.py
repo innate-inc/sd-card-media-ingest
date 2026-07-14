@@ -17,7 +17,8 @@ DEFAULTS = {
         "numbers": True,
     },
     "poll": {"interval_ms": 500},
-    "wipe": {"enabled": False},              # real deletion also needs --enable-wipe
+    "wipe": {"enabled": False},              # real deletion also needs the env var
+    "remote": {"base": ""},                  # rclone dest for the uploader; "" = off
 }
 
 

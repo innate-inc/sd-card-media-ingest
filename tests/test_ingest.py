@@ -216,5 +216,41 @@ class EmitterTest(unittest.TestCase):
         self.assertEqual(sum(l.startswith("legend ") for l in lines), 5)
 
 
+class UploaderTest(unittest.TestCase):
+    def test_upload_verifies_against_remote_and_marks_done(self):
+        import subprocess
+        import uploader
+        from ingest_copier import manifest_name
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = os.path.join(tmp.name, "dest")
+        remote = os.path.join(tmp.name, "remote")   # local dir stands in for cloud
+        d = os.path.join(base, "UUID-01", "2026-07-14_00-00-00")
+        make_card(d, {"DCIM/IMG.JPG": b"x" * 2000, "note.txt": b"hi"})
+        # the ingest daemon's receipt (written outside d, then moved in)
+        sums = os.path.join(tmp.name, "sums")
+        with open(sums, "w") as fo:
+            subprocess.run(["rclone", "sha1sum", d], stdout=fo,
+                           stderr=subprocess.DEVNULL, check=True)
+        os.replace(sums, os.path.join(d, manifest_name("sha1")))
+        os.makedirs(os.path.join(base, "UUID-02", "d"))  # no receipt -> ignored
+
+        self.assertEqual(list(uploader.ready_dirs(base, manifest_name("sha1"))), [d])
+        self.assertTrue(uploader.upload_dir(d, base, remote, "sha1"))
+
+        rd = os.path.join(remote, "UUID-01", "2026-07-14_00-00-00")
+        self.assertTrue(os.path.exists(os.path.join(rd, "note.txt")))
+        self.assertTrue(os.path.exists(os.path.join(d, ".uploaded")))
+        # the proof: remote's own hashes match what we ingested
+        loc = {l.split()[1]: l.split()[0]
+               for l in open(os.path.join(d, "SHA1SUMS"))}
+        rem = {l.split()[1]: l.split()[0]
+               for l in open(os.path.join(d, "REMOTE_SHA1SUMS"))}
+        for f in ("DCIM/IMG.JPG", "note.txt"):
+            self.assertEqual(loc[f], rem[f])
+        # already uploaded -> not offered again
+        self.assertEqual(list(uploader.ready_dirs(base, manifest_name("sha1"))), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -37,5 +37,14 @@ interval_ms = 500              # discovery + display tick; also the hb period
 
 [wipe]
 # SAFETY: with false (the default), a confirmed wipe only *logs* what it would
-# delete. Real deletion requires this AND the --enable-wipe CLI flag.
+# delete. Real deletion requires this AND the env var INGEST_ENABLE_WIPE=1.
 enabled = false
+
+[remote]
+# Where the (separate) uploader pushes verified ingests, as an rclone
+# destination prefix. Empty = no uploading. The remote + credentials live in
+# rclone's own config (`rclone config`); only the path prefix goes here.
+#   base = "b2:my-bucket/ingest"      # Backblaze B2
+#   base = "gdrive:ingest"            # Google Drive
+#   base = "/mnt/backup2/ingest"      # a second local disk
+base = ""
