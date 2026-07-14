@@ -1,8 +1,11 @@
 # SD-card ingest station — plan
 
-Status: **design draft.** Nothing in this document is implemented yet; the
-built pieces so far are the display UI (`app/`) and its simulator (`sim/`). This
-plan covers the host-side ingest daemon + copier that will drive the display.
+Status: **implemented** (first pass). The host-side ingest daemon + copier this
+plan describes now lives in `host/ingest.py` (discovery → copier → emitter →
+confirm → guarded-wipe); `--dry-run` runs the whole lifecycle over fake cards.
+Phases 1–4 below are built; wiping defaults to a triple-guarded dry-run. Untested
+against real readers (dev box has none). This plan remains the rationale of
+record for the design.
 
 ## Goal & scope
 

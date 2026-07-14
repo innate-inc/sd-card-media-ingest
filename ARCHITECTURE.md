@@ -13,11 +13,11 @@ segments and text it is told to. All policy lives on the host.
   │           µSD │             │  line protocol (serial)│  LVGL UI:        │
   │ reader 2: ... │──► ingest ──┴──────── /dev/ttyACM ──►│  stacked gauges, │
   │ ...           │    daemon        (host → device)     │  paging, toggle, │
-  └───────────────┘                                      │  heartbeat pixel │
+  └───────────────┘                                      │  no-signal scrim │
                                                          └──────────────────┘
                        ▲                                          │
-                       └───────── confirm-to-wipe ◄───────────────┘
-                                  (device → host, TBD)
+                       └───────── confirm <i> (BOOTSEL) ◄─────────┘
+                                  (device → host)
 ```
 
 ## Components
@@ -28,20 +28,25 @@ the tree, to be replaced; **planned** = designed, not yet code.
 | Component | Where | Status | In short |
 |-----------|-------|--------|----------|
 | **Shared UI core** | `app/` | built | Portable C: `model` (slots + segments), `proto` (parse the serial line protocol), `ui` (LVGL widgets). Compiled unchanged into **both** the device firmware and the simulator. |
-| **Simulator** | `sim/` | built | The `app/` UI in an SDL desktop window; stdin stands in for the serial link. `nix run .#sim`. `--shot` renders headless for tests. |
-| **Device firmware (LVGL)** | `device/` | built | Runs the same `app/` UI via LVGL on the RP2350/ST7789 (VERTICAL scan = landscape 320×172, RGB565 byte-swapped in the flush), reading the line protocol over USB-CDC. `nix build .#firmware-ui` → uf2; `nix run .#flash`. The earlier WSI1 image firmware lives on in `firmware/` (`nix run .#flash-image`). |
-| **Tests** | `tests/` | built | `nix flake check`: a proto unit test (mock serial lines → asserted model) and a sim-render integration test (mock feed → real LVGL → non-blank frame). |
-| **Host feeder / server** | `host/` | **planned** | Will discover readers behind the hub in physical order, run the copier, and emit the line protocol. **Today `host/` holds the superseded display driver** (`ingest_display.py`: JSON-on-stdin → PIL → WSI1 frames — a *different* protocol) plus `send_image.py`/`wire.py`. |
-| **Copier** | `host/` | **planned** | Per card: copy → hash-verify → manifest → await human confirmation → wipe. See `INGEST_PLAN.md`. |
-
-The diagram above shows the **target** system; the "ingest daemon", copier, and
-LVGL device firmware are planned, not yet implemented.
+| **Simulator** | `sim/` | built | The `app/` UI in an SDL desktop window; stdin stands in for the serial link and **SPACE** stands in for the board's button (hold = long press, ESC quits). `nix run .#sim`. `--shot` renders headless for tests. |
+| **Device firmware (LVGL)** | `device/` | built | Runs the same `app/` UI via LVGL on the RP2350/ST7789 (VERTICAL scan = landscape 320×172, RGB565 byte-swapped in the flush), reading the line protocol over USB-CDC. Reads the **BOOTSEL button** at runtime for on-device navigation and emits `confirm <i>` back to the host. `nix build .#firmware-ui` → uf2; `nix run .#flash`. The earlier WSI1 image firmware lives on in `firmware/` (`nix run .#flash-image`). |
+| **Host ingest daemon** | `host/ingest.py` | built | Discovers readers behind the hub in physical order (`/dev/disk/by-path`), runs the copier, and emits the line protocol. `--dry-run` runs the full lifecycle over fake cards with no hardware — this is the canonical driver for the sim/board: `nix run .#ingest -- --dry-run \| nix run .#sim`. Stdlib only. |
+| **Copier** | `host/ingest.py` | built | Per card: copy → hash-verify → manifest → await `confirm <i>` → wipe. Wiping is a triple-guarded dry-run by default (see `INGEST_PLAN.md`). |
+| **Tests** | `tests/` | built | `nix flake check`: a `proto` unit test (serial lines → asserted model), `ingest-unit` (the daemon's copier/emitter/wipe-guards over a fake card tree), `ingest-render` (real daemon `--dry-run` → real LVGL → non-blank frame), and `sim-render` (a fixed serial feed → real LVGL → non-blank frame). |
+| **Legacy display driver** | `host/` | legacy | The superseded `ingest_display.py` (JSON-on-stdin → PIL → WSI1 frames — a *different* protocol) plus `send_image.py`/`wire.py`, kept for the WSI1 image firmware. |
 
 ## Protocol (host → device)
 
 Newline-terminated ASCII lines, one command each. Chosen over JSON so the device
 parses with `sscanf` and no allocator. Any recognised (non-empty, non-`#`) line
-pulses the heartbeat pixel; blank lines and `#`-comments are ignored entirely.
+counts as liveness; blank lines and `#`-comments are ignored entirely. A stray
+trailing `\r` (CRLF host) is tolerated on every command.
+
+**Liveness contract:** the feeder must send *something* (any line, e.g. `hb`)
+at least every ~1 s. If the device sees no line for `STALE_MS` (2 s) it drops a
+dim grey "no signal" scrim over the last frame and goes inert (the button is
+dead) until the feed returns. A busy feeder must keep emitting `hb` even while
+hashing so it isn't mistaken for a dead link.
 
 | Command | Meaning |
 |---------|---------|
@@ -50,6 +55,9 @@ pulses the heartbeat pixel; blank lines and `#`-comments are ignored entirely.
 | `count <n>` | Truncate the slot list to `n`. |
 | `bg <rrggbb>` | Background / "empty space" colour. |
 | `numbers <0\|1>` | Show per-segment numbers on/off. |
+| `legend <rrggbb> <text…>` | Append a colour→meaning row to the legend (up to `MAX_LEGEND = 6`). |
+| `legend clear` | Empty the legend (removes the legend page). |
+| `path <i> <text…>` | Optional per-slot detail (UUID / mount path) shown on the detail screen. |
 | `slot <i> <size_mb> <eta_s> <status> <p0> <c0> <p1> <c1> <p2> <c2> <p3> <c3> <label…>` | Define/update slot `i`. |
 
 Field meanings:
@@ -72,10 +80,13 @@ Field meanings:
   The host assigns each segment's meaning (e.g. uploaded / copied / uncopied).
 - `label` — the rest of the line, truncated to 23 chars (`MAX_LABEL = 24`).
 
-Per-segment numbers (when `numbers 1`) draw only on segments ≥ 12 px tall, and
-show GB when `size_mb ≥ 0`, otherwise the segment's percentage. The number at
-the base of each column is the total filled percentage (sum of segment
-permilles).
+Per-segment numbers (when `numbers 1`) draw only on segments ≥ 12 px tall and
+show **gigabytes** (`size_mb × permille`); a segment with unknown `size_mb`
+draws no number. Percentages are not shown. Bars use a **relative scale** —
+each column is that card's own capacity, so the segments fill it and the
+leftover is the card's free space in `bg` colour. (Relative vs absolute is a
+feeder decision; it just changes how the host computes permilles, not the
+firmware.)
 
 Example tick for one card, 30% uploaded, 20% copied, 25% still on card:
 
@@ -85,11 +96,38 @@ numbers 1
 slot 0 238000 900 active 300 22c35e 200 0072b2 250 e69f00 0 0 SANDISK64
 ```
 
-### Device → host (planned)
+### Device → host
 
-A confirm channel for the wipe step: the device signals a human confirmation
-(e.g. the RP2350 BOOTSEL button read at runtime → `confirm <i>` line back).
-Not yet implemented; see `INGEST_PLAN.md`.
+A confirm channel for the wipe step. The device reads the **RP2350 BOOTSEL
+button at runtime** (tri-stating the QSPI CS to sample the pad) and, when the
+operator completes the on-screen arm+confirm gesture, emits a single line back
+over the same USB-CDC link:
+
+| Line | Meaning |
+|------|---------|
+| `confirm <i>` | The operator confirmed a wipe of slot `i`. The host may now delete that card. |
+
+The host must treat `confirm` as the *only* authorisation to wipe (deletion is
+never automatic). See `INGEST_PLAN.md` for the copier's side.
+
+### On-device navigation (one button)
+
+The panel is display-only, so the single BOOTSEL button drives a three-state
+machine; **short** vs **long** press (≥ 600 ms) are the only inputs:
+
+| State | short press | long press |
+|-------|-------------|------------|
+| **browse** (auto-cycling status) | wake → select first card | wake → select first card |
+| **select** (white box around a card) | move to next card (page follows it) | open its **detail** (only for a `done`/`pending` card) |
+| **detail** (info + red delete zone) | back to select | *hold 5 s* → **confirm** → `confirm <i>` |
+
+The wipe is a single deliberate **5-second hold** in the detail screen: the red
+delete zone fills like a progress bar and fires the wipe at the top (there is no
+separate "armed" click). A wipe is only offered for a **finished** card
+(`done`/`pending`); an empty slot, a still-copying card, or an errored card
+can't open the wipe screen at all. Any 12 s of inactivity falls back to browse,
+and a stale feed makes the button inert. There are **no page dots** — the
+per-column slot number is the position indicator.
 
 ## Configuration & behaviour of each element
 
@@ -97,14 +135,20 @@ Not yet implemented; see `INGEST_PLAN.md`.
 - Fixed behaviour, no config file. Renders whatever the protocol says.
 - Landscape 320×172 (panel driven in Waveshare VERTICAL scan; no LVGL rotation).
 - Shows up to **4 columns per page**; if more slots arrive it **cycles pages**
-  (~4 s). Each column's label **toggles every 2 s** between "slot# name" and
-  "ETA + size". Top-left **heartbeat pixel** blinks on each received line.
+  (~4 s). When the host sends a legend, it becomes the **leftmost page** (a
+  colour key), with the card pages after it. Each column's label **toggles
+  every 2 s** between "slot# name" and "ETA + size". Liveness is whole-screen:
+  a dim grey **"no signal" scrim** drops if the feed goes quiet (see the
+  liveness contract above) — there is no heartbeat pixel.
 
 ### Simulator
 - Same UI. `ingest-sim` opens a 320×172 SDL window and reads the protocol from
-  stdin. `--shot <ms> <file.ppm>` renders headless (for tests).
+  stdin. **SPACE** is the one button (held past 600 ms = long press); it also
+  accepts scripted `press short` / `press long` lines on stdin and prints
+  `confirm <i>` to stdout. `--shot <ms> <file.ppm>` renders headless (for
+  tests).
 
-### Host server (TOML config — planned surface)
+### Host ingest daemon (`host/ingest.py`, TOML config)
 The host config decides *everything the device doesn't*:
 - **Serial**: which port the device is on.
 - **Hub selection**: which USB hub's readers to watch (ignore system disks).

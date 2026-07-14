@@ -38,6 +38,10 @@
 #ifdef LV_SIM
 #define LV_USE_SDL 1
 #define LV_SDL_INCLUDE_PATH <SDL2/SDL.h>
+/* Force the software renderer. Requesting an accelerated renderer yields a
+ * black window on some Linux setups (Wayland / headless-ish GPU drivers) when
+ * SDL can't get an accelerated context; software always presents. */
+#define LV_SDL_ACCELERATED 0
 #endif
 
 #endif /* LV_CONF_H */

@@ -28,6 +28,28 @@ nix run .#send -- path/to/picture.jpg
 On boot the panel shows **red/green/blue vertical bars** — that confirms the
 display works before you send anything. `nix run .#send -- IMG` replaces it.
 
+## Ingest station
+
+The larger system this board drives is an **SD-card / USB ingest station**:
+copy footage off a bank of card readers, hash-verify every file, and only wipe
+a card once a human confirms. A **dumb display** (the LVGL firmware / simulator)
+renders whatever the **smart host** tells it over a plain-text line protocol.
+See `ARCHITECTURE.md` (the split + protocol) and `INGEST_PLAN.md` (the daemon).
+
+```bash
+# The real host daemon: discover readers -> copy -> verify -> manifest ->
+# await `confirm <i>` -> wipe. --dry-run fakes the cards so it needs no
+# hardware; pipe it into the simulator (or > /dev/ttyACM0 at the board).
+nix run .#ingest -- --dry-run | nix run .#sim
+nix run .#ingest -- --config host/ingest.toml      # the real thing
+```
+
+**Wipe safety:** deletion never happens automatically. A card is wiped only
+after every file is verified *and* the operator sends `confirm <i>`, and even
+then it defaults to a logged dry run — real deletion needs `[wipe] enabled` in
+`host/ingest.toml` plus `--enable-wipe`. See `host/ingest.toml` for the full
+config surface.
+
 Options for the sender:
 
 ```bash

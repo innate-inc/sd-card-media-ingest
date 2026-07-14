@@ -10,10 +10,13 @@
 #define INGEST_MODEL_H
 
 #include <stdint.h>
+#include <string.h>
 
-#define MAX_SLOTS 32
-#define MAX_LABEL 24
-#define MAX_SEGS  4
+#define MAX_SLOTS  32
+#define MAX_LABEL  24
+#define MAX_SEGS   4
+#define MAX_LEGEND 6
+#define MAX_DETAIL 48   /* per-card path / UUID shown on the detail screen */
 
 typedef enum {
     ST_IDLE = 0,
@@ -31,7 +34,7 @@ typedef struct {
 
 typedef struct {
     char label[MAX_LABEL];
-    int nsegs;
+    char detail[MAX_DETAIL]; /* optional path/UUID for the detail screen */
     segment_t segs[MAX_SEGS];
     int32_t size_mb;     /* total size in MB, -1 = unknown (for numbers) */
     int32_t eta_s;       /* seconds to completion, -1 = unknown */
@@ -39,16 +42,22 @@ typedef struct {
 } slot_t;
 
 typedef struct {
+    uint32_t color;          /* 0xRRGGBB swatch */
+    char text[MAX_LABEL];    /* what this colour means */
+} legend_t;
+
+typedef struct {
     slot_t slots[MAX_SLOTS];
     int count;
     uint32_t empty_color;   /* configurable background / "empty space" colour */
     int show_numbers;       /* server toggle: draw per-segment numbers */
+    legend_t legend[MAX_LEGEND];
+    int nlegend;            /* server-supplied colour legend (0 = no legend page) */
 } model_t;
 
 static inline void model_init(model_t *m) {
-    m->count = 0;
+    memset(m, 0, sizeof *m);
     m->empty_color = 0x202020;
-    m->show_numbers = 0;
 }
 
 #endif /* INGEST_MODEL_H */

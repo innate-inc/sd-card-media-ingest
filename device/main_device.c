@@ -8,10 +8,12 @@
  * span is byte-swapped before it goes out on SPI.
  */
 #include <stdio.h>
-#include <string.h>
 
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
+#include "hardware/sync.h"
+#include "hardware/structs/ioqspi.h"
+#include "hardware/structs/sio.h"
 
 #include "lvgl.h"
 
@@ -40,6 +42,48 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
     DEV_SPI_Write_nByte(px, (uint32_t)w * h * 2);
     DEV_Digital_Write(LCD_CS_PIN, 1);
     lv_display_flush_ready(disp);
+}
+
+/* Sample the BOOTSEL button at runtime. It doubles as the QSPI chip-select, so
+ * we tri-state CS, read the pad, and restore it with interrupts off -- and the
+ * whole routine must run from RAM (never flash, whose access we just disabled).
+ * (Adapted from the Pico SDK picoboard/button example.) */
+static bool __no_inline_not_in_flash_func(bootsel_pressed)(void) {
+    const uint CS_IDX = 1;
+    uint32_t flags = save_and_disable_interrupts();
+    hw_write_masked(&ioqspi_hw->io[CS_IDX].ctrl,
+                    GPIO_OVERRIDE_LOW << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
+                    IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
+    for (volatile int i = 0; i < 1000; ++i) { }
+#if PICO_RP2040
+    const uint32_t cs_bit = 1u << 1;
+#else
+    const uint32_t cs_bit = SIO_GPIO_HI_IN_QSPI_CSN_BITS;
+#endif
+    bool pressed = !(sio_hw->gpio_hi_in & cs_bit);   /* active-low */
+    hw_write_masked(&ioqspi_hw->io[CS_IDX].ctrl,
+                    GPIO_OVERRIDE_NORMAL << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
+                    IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
+    restore_interrupts(flags);
+    return pressed;
+}
+
+/* Debounce the button and turn stable edges into ui_button_down/up. */
+static void poll_button(void) {
+    static bool stable = false;
+    static int agree = 0;
+    bool raw = bootsel_pressed();
+    if (raw == stable) { agree = 0; return; }
+    if (++agree < 3) return;            /* need a few consistent reads */
+    agree = 0;
+    stable = raw;
+    if (stable) ui_button_down();
+    else        ui_button_up();
+}
+
+/* The operator confirmed a wipe: tell the host over the same USB-CDC link. */
+static void on_confirm(int slot) {
+    printf("confirm %d\n", slot);
 }
 
 /* Read whatever serial bytes are buffered, dispatch complete lines. */
@@ -75,9 +119,11 @@ int main(void) {
 
     model_init(&model);
     ui_create();
+    ui_set_confirm_cb(on_confirm);
 
     for (;;) {
         pump_serial();
+        poll_button();
         lv_timer_handler();
         sleep_ms(5);
     }

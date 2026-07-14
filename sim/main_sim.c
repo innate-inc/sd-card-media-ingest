@@ -8,6 +8,9 @@
  * exits (used by the test harness; needs no visible display under xvfb).
  */
 #define _POSIX_C_SOURCE 200809L
+#define SDL_MAIN_HANDLED          /* we keep our own main() */
+#include <SDL2/SDL.h>
+
 #include "lvgl.h"
 #include "ui.h"
 #include "proto.h"
@@ -21,6 +24,27 @@
 #include <unistd.h>
 
 static model_t model;
+
+/* The operator confirmed a wipe: emit the device->host confirm line. */
+static void on_confirm(int slot) {
+    printf("confirm %d\n", slot);
+    fflush(stdout);
+}
+
+/* Interactive input: SPACE stands in for the board's one button. We read the
+ * key *state* (not events) each frame and derive down/up edges, so LVGL's own
+ * SDL event pump and ours don't fight over the queue; holding SPACE past
+ * LONG_MS registers as a long press exactly like the hardware. ESC quits. */
+static void poll_keyboard(void) {
+    static int prev = 0;
+    SDL_PumpEvents();
+    const Uint8 *ks = SDL_GetKeyboardState(NULL);
+    if (ks[SDL_SCANCODE_ESCAPE]) exit(0);
+    int now = ks[SDL_SCANCODE_SPACE];
+    if (now && !prev) ui_button_down();
+    else if (!now && prev) ui_button_up();
+    prev = now;
+}
 
 static void dummy_flush(lv_display_t *d, const lv_area_t *a, uint8_t *px) {
     (void)a; (void)px;
@@ -42,10 +66,22 @@ static void pump_stdin(void) {
         ssize_t r = read(0, &c, 1);
         if (r <= 0) return;
         if (c == '\n') {
+            if (len > 0 && buf[len - 1] == '\r') len--;   /* tolerate CRLF */
             buf[len] = '\0';
-            proto_result_t res = proto_handle_line(&model, buf);
-            if (res.heartbeat) ui_heartbeat();
-            if (res.changed) ui_update(&model);
+            /* sim-only: fake the board's one button from stdin */
+            if (!strcmp(buf, "press short")) {
+                ui_button(UI_BTN_SHORT);
+            } else if (!strcmp(buf, "press long")) {
+                ui_button(UI_BTN_LONG);
+            } else if (!strcmp(buf, "press down")) {
+                ui_button_down();
+            } else if (!strcmp(buf, "press up")) {
+                ui_button_up();
+            } else {
+                proto_result_t res = proto_handle_line(&model, buf);
+                if (res.heartbeat) ui_heartbeat();
+                if (res.changed) ui_update(&model);
+            }
             len = 0;
         } else if (len < (int)sizeof(buf) - 1) {
             buf[len++] = c;
@@ -97,14 +133,17 @@ int main(int argc, char **argv) {
         lv_display_set_flush_cb(d, dummy_flush);
     } else {
         lv_sdl_window_create(UI_W, UI_H);
+        fprintf(stderr, "ingest-sim: SPACE = button (hold = long press), ESC = quit\n");
     }
 
     model_init(&model);
     ui_create();
+    ui_set_confirm_cb(on_confirm);
 
     uint32_t start = tick_cb();
     for (;;) {
         pump_stdin();
+        if (!shot_file) poll_keyboard();
         uint32_t idle = lv_timer_handler();
         if (shot_file && tick_cb() - start >= (uint32_t)shot_ms) {
             write_ppm(shot_file);

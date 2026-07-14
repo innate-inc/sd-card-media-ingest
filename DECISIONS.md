@@ -99,3 +99,93 @@ running order-of-events of *why things changed*.
 32. **Mock-driven tests** (`tests/`, `nix flake check`): proto unit test (fake
     serial lines → asserted model) + sim-render integration (mock feed → real
     LVGL → non-blank frame, headless).
+
+## Display refinements (relative scale, GB, legend)
+33. **Relative scale**: each card's bar = its *own* capacity (not a shared
+    max). Purely a feeder concern — it changes how the host computes each
+    segment's permille, not the firmware.
+34. **Numbers = gigabytes only, no percentages.** Dropped the per-column total
+    "%" label and the segment-percent fallback; a segment with unknown size
+    just draws no number.
+35. **Colour legend page**: a new `legend`/`legend clear` protocol command lets
+    the host name each colour; the device renders it as the **leftmost page**
+    of the scroll (a colour key), with card pages after it. No legend sent =
+    no legend page.
+36. **Done-state visual = full-green fill, black text** (agreed). The panel is
+    display-only, so instead of touch, **input = the RP2350 BOOTSEL button**.
+37. **One-button navigation** (short vs long press ≥ 600 ms): browse (auto
+    cycle) → *press* wakes to **select** (white box round a card, short = next
+    card, page follows it) → *long* opens **detail** (path + per-segment GB +
+    status, red delete zone on the right ¼) → *long* **arms** → *click*
+    **confirms**. Three deliberate actions to wipe; 12 s idle falls back to
+    browse. **No page dots** — the per-column slot number is the position cue.
+38. **Detail data**: new `path <i> <text>` command carries an optional
+    UUID/mount string for the detail screen (device still can't invent it).
+39. **Confirm channel built** (device → host): on confirm the firmware prints
+    `confirm <i>` over the same USB-CDC link; the host treats it as the *only*
+    authorisation to wipe. BOOTSEL is sampled at runtime by tri-stating the
+    QSPI CS (RAM-resident, IRQs off), per the Pico SDK button example.
+40. **Sim drives the button from stdin** (`press short`/`press long`) and prints
+    `confirm <i>` to stdout, so the whole gesture flow is testable headlessly.
+41. **Interactive sim button** = the **SPACE** key, read as key *state* (not
+    events, so it doesn't fight LVGL's SDL event pump) with real hold timing;
+    ESC quits. Lets you exercise short/long press in the window.
+42. **Mock server** (`host/mock_feed.py`, `nix run .#mock`): animates fake
+    cards' copy/upload progress as protocol lines, for driving the sim or the
+    board with no real readers.
+
+## Wipe UX, liveness, and lifecycle
+43. **Hold-to-wipe = one 5 s hold** (not a quick arm + confirm click). The
+    delete zone fills like a progress bar over `ARM_MS` (5 s); at the top it
+    fires the wipe directly. Navigation long-press stays snappy (`LONG_MS`
+    600 ms). The separate "armed" state was removed.
+44. **Liveness = whole-screen, not a pixel.** The blinking heartbeat pixel is
+    gone; instead, if the host sends nothing for `STALE_MS` (2 s) a dim
+    blackish-red "no signal" scrim drops over the frozen last frame. Requires
+    the feeder to emit `hb` at least ~once/second even while busy.
+45. **A stale screen is inert.** While "no signal" is showing, the button does
+    nothing and any in-progress hold/navigation is aborted back to browse — you
+    can't arm a wipe off stale data.
+46. **Done card = full green + black label text** (readable on the green bar).
+47. **Wiped → empty, pinned in place.** After a wipe: a brief `WIPED` flash,
+    then the slot becomes a blank `empty` row **at the same absolute index**
+    (never reordered/collapsed — physical position is the identity). An empty
+    reader is the same blank row. The mock drives the whole arc on a timer
+    (copying → done → WIPED → empty → re-inserted) and models **intermittent
+    devices** (e.g. slot 2 sits empty most of the time) so gaps hold position.
+
+## Real host daemon + review-driven hardening
+48. **Real ingest daemon built** (`host/ingest.py`, `nix run .#ingest`): stdlib
+    discovery (`/dev/disk/by-path`) → copier (`copying→verifying→pending→
+    wiping→empty`, whole-file copy, hash-verify, manifest-before-wipe) →
+    protocol emitter → `confirm <i>` reader → **triple-guarded** wipe
+    (`[wipe] enabled` **and** `--enable-wipe` **and** not `--dry-run`; else a
+    logged dry-run). `--dry-run` runs the whole lifecycle over fake cards.
+    Tests: `ingest-unit` + `ingest-render` in `nix flake check`.
+49. **Mock deleted.** `host/mock_feed.py` is gone; **`ingest.py --dry-run` is
+    the canonical sim/board driver** — it models the real lifecycle
+    (`pending`/`error`/resume/confirm) the mock structurally couldn't. Supersedes
+    item 42. `sim-render` keeps a fixed inline serial feed as a dumb smoke test.
+50. **Wipe gated to finished cards only.** The detail/wipe screen opens (and
+    `confirm` fires) *only* for a `done`/`pending` slot; an empty slot, a
+    still-copying card, or an errored card can't be armed — closing a
+    wipe-the-wrong/absent-card hole. Refines item 37.
+51. **Dropped the WIPED flash** (revises item 47): a wiped card drops straight to
+    the blank `empty` row (a wiped card holds no data, so a full-bar "WIPED"
+    flash was misleading). Both the deleted mock and `ingest.py`'s post-wipe
+    frame did this; `ingest.py` now emits the plain empty row.
+52. **Stale scrim is grey, not red** (revises item 44): red is reserved for real
+    errors; a quiet feed is just "no signal", so the scrim is dim grey.
+53. **Protocol robustness** (from the xhigh protocol review): commands are
+    dispatched on a **CR/LF/space-trimmed** copy of the line, so a trailing
+    `\r` from a CRLF host no longer breaks exact-match commands (`clear`,
+    `legend clear`) or the sim's `press` scripts; `clear` now also drops all
+    per-slot `detail` so a stale path/UUID can't outlive its card; empty-text
+    `legend` rows are rejected. Documented the **hb liveness contract** (feeder
+    must emit within `STALE_MS`). Deferred (design changes, not yet done):
+    per-card identity in `confirm <i>`, and a flexible/negotiated segment count.
+54. **Dead code + docs swept.** Removed unused `slot_t.nsegs` and a stray
+    `<string.h>` in the device firmware; deduped the field-copy pattern into
+    `copy_field()`. Synced `ARCHITECTURE.md`/`INGEST_PLAN.md`/`README.md`: host
+    daemon now "built", nav table reflects the single 5 s hold (item 43), the
+    heartbeat pixel is gone (item 44).
