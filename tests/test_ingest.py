@@ -146,6 +146,15 @@ class JobTest(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(self.src, rel)))
         self.assertTrue(os.path.exists(extra), "unscanned file must survive")
 
+    def test_armed_wipe_removes_emptied_dirs(self):
+        j = self.job(wipe_armed=True)
+        j.run()
+        self.assertTrue(j.request_wipe())
+        self._await_state(j, EMPTY)
+        # emptied subdirs are removed; the mount root itself is left alone
+        self.assertFalse(os.path.exists(os.path.join(self.src, "DCIM")))
+        self.assertTrue(os.path.isdir(self.src))
+
     def test_armed_wipe_refuses_source_changed_after_scan(self):
         j = self.job(wipe_armed=True)
         j.run()

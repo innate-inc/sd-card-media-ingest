@@ -245,9 +245,11 @@ class CardJob:
         return True
 
     def _wipe(self):
-        """Delete the files we verified. Before each delete, cheaply confirm the
-        source is unchanged since scan (size + mtime -- the card is read-only, so
-        a change means don't touch it). Dry run unless [wipe] enabled."""
+        """Delete the files we verified, then remove the directories they left
+        behind (so a card comes back empty, not full of empty folders). Before
+        each delete, cheaply confirm the source is unchanged since scan (size +
+        mtime -- the card is read-only, so a change means don't touch it). Dry
+        run unless [wipe] enabled."""
         lbl = self.card.label
         armed = self.wipe_armed
         log.log(logging.WARNING if armed else logging.INFO,
@@ -275,10 +277,30 @@ class CardJob:
                 self.fail("WIPE ERR")
                 log.error("%s: wipe failed on %s: %s", lbl, rel, e)
                 return
+        # Remove the emptied directory tree (deepest first), never the mount
+        # root itself. rmdir only removes a dir that is actually empty, so
+        # anything unexpected we didn't scan (e.g. a symlink) is left in place.
+        removed_dirs = 0
+        root_real = os.path.realpath(self.card.mountpoint)
+        for d, _sub, _files in os.walk(self.card.mountpoint, topdown=False):
+            if self.abort:
+                self.fail("REMOVED")
+                return
+            if os.path.realpath(d) == root_real:
+                continue
+            if not armed:
+                log.info("%s:   would remove dir %s", lbl,
+                         os.path.relpath(d, self.card.mountpoint))
+                continue
+            try:
+                os.rmdir(d)
+                removed_dirs += 1
+            except OSError:
+                pass                          # not empty -> leave it
         self.wiped = True
         self.state = EMPTY
         if armed:
-            log.warning("%s: WIPED %d files", lbl, deleted)
+            log.warning("%s: WIPED %d files, %d dirs", lbl, deleted, removed_dirs)
 
     def _unchanged(self, src, rel):
         """Source still matches what we scanned (size + mtime)?"""
