@@ -167,7 +167,7 @@ per-column slot number is the position indicator.
 The host config decides *everything the device doesn't*:
 - **Serial**: the device is found by USB **VID/PID** (`[serial]`), or pipe mode.
 - **Hub selection**: which USB hub's readers to watch (ignore system disks).
-- **Destination**: `dest_base`; files land in `dest_base/<uuid>/<ingest_date>/`.
+- **Destination**: `dest_base`; files land in `dest_base/<label>-<uuid>/<ingest_date>/`.
 - **Hashing**: `[hash] algo` — **sha1** by default (the hash Drive/B2/S3 all
   serve from metadata, so the remote is verifiable without downloading).
 - **Segments**: colours for the four pipeline stages + the empty colour, plus

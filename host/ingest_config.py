@@ -28,7 +28,7 @@ DEFAULTS = {
     # Readers are found as the drives plugged into this hub (by USB vid:pid);
     # picks up SD readers + an SSD on the hub, not the nvme or the display board.
     "hub": {"vid": "1a40", "pid": "0101", "path_prefix": ""},  # Terminus hub
-    "dest": {"base": "/media/jetson1/jetson_backup/ingest/"},  # base/<uuid>/<date>/
+    "dest": {"base": "/media/jetson1/jetson_backup/ingest/"},  # base/<label>-<uuid>/<date>/
     "hash": {"algo": "sha1"},               # the common hash across Drive + B2
     "segments": {
         # Okabe-Ito, colourblind-safe; the stages the bar climbs through.

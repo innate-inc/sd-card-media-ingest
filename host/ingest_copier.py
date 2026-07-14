@@ -3,7 +3,7 @@
     scan -> rclone copy -> rclone check -> manifest -> pending -> (confirm) -> wipe
 
 The heavy lifting is delegated to **rclone** (thoroughly tested): `rclone copy`
-transfers every file under the card into dest_base/<uuid>/<ingest_date>/ and
+transfers every file under the card into dest_base/<label>-<uuid>/<ingest_date>/ and
 verifies each transfer, then `rclone check --one-way` re-reads the source and
 destination *independently* and compares hashes -- that independent double read
 is what makes the verify meaningful for a system that then deletes the card.
@@ -21,6 +21,7 @@ Kept deliberately small -- this is the file that deletes footage:
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -100,7 +101,7 @@ class CardJob:
         self.copied_bytes = 0
         self.verified_bytes = 0
         self.uploaded_bytes = 0               # filled from metadata.json (uploader)
-        self.dest = _dated_dir(cfg["dest"]["base"], card.uuid)
+        self.dest = _dated_dir(cfg["dest"]["base"], card)
         self._src_meta = {}                   # relpath -> (size, mtime_ns) at scan
         self.wiped = False
 
@@ -297,11 +298,19 @@ def _stats_bytes(line):
     return st.get("bytes") if st else None
 
 
-def _dated_dir(base, uuid):
-    """dest_base/<uuid>/<ingest_date>/ -- a fresh directory per ingest, created
-    atomically so nothing ever collides (two same-UUID cards at once just get
-    adjacent dirs)."""
-    day = os.path.join(base, uuid, time.strftime("%Y-%m-%d_%H-%M-%S"))
+def _card_dir(card):
+    """<label>-<uuid> so the folder is human-recognisable, sanitised for a path;
+    just <uuid> when the card has no filesystem label. UUID stays in the name so
+    two same-labelled cards never collide."""
+    label = re.sub(r"[^A-Za-z0-9._-]+", "_", card.fs_label or "").strip("._-")
+    return "%s-%s" % (label, card.uuid) if label else card.uuid
+
+
+def _dated_dir(base, card):
+    """dest_base/<label>-<uuid>/<ingest_date>/ -- a fresh directory per ingest,
+    created atomically so nothing ever collides (two same-UUID cards at once
+    just get adjacent dirs)."""
+    day = os.path.join(base, _card_dir(card), time.strftime("%Y-%m-%d_%H-%M-%S"))
     d, n = day, 2
     while True:
         try:

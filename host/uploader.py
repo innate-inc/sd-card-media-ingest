@@ -7,7 +7,7 @@ It scans dest_base for ingest dirs that are *verified* (have a <ALGO>SUMS
 receipt written by the ingest daemon) but *not yet uploaded* (no `.uploaded`
 marker), and for each:
 
-    rclone copy  <dir> <remote-base>/<uuid>/<date>/
+    rclone copy  <dir> <remote-base>/<label>-<uuid>/<date>/
     rclone check <dir> <remote-base>/... --one-way    # verify against the
                                                       # remote's own hashes
     rclone sha1sum <remote-base>/... > <dir>/REMOTE_<ALGO>SUMS   # proof
@@ -43,12 +43,12 @@ DEFAULT_CONFIG = "ingest.toml"   # in the working dir (project dir), not /etc
 
 
 def ready_dirs(base):
-    """Yield dest_base/<uuid>/<date>/ dirs that are verified (have the copier's
-    metadata.json) but not yet uploaded (no uploaded.json)."""
-    for uuid in sorted(_listdir(base)):
-        ud = os.path.join(base, uuid)
-        for date in sorted(_listdir(ud)):
-            d = os.path.join(ud, date)
+    """Yield dest_base/<label-uuid>/<date>/ dirs that are verified (have the
+    copier's metadata.json) but not yet uploaded (no uploaded.json)."""
+    for card in sorted(_listdir(base)):
+        cd = os.path.join(base, card)
+        for date in sorted(_listdir(cd)):
+            d = os.path.join(cd, date)
             if read_metadata(d) and not read_uploaded(d):
                 yield d
 

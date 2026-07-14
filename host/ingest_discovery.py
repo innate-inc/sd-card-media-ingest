@@ -23,10 +23,12 @@ UNKNOWN = object()
 class Card:
     """A present card: identity + where to read it from."""
 
-    def __init__(self, ident, label, uuid, mountpoint, capacity_bytes):
+    def __init__(self, ident, label, uuid, mountpoint, capacity_bytes,
+                 fs_label=""):
         self.ident = ident                # stable slot identity (by-path / mock)
         self.label = label                # short name for the display column
         self.uuid = uuid                  # partition UUID -> dest sub-dir
+        self.fs_label = fs_label          # real filesystem label ("" if none)
         self.mountpoint = mountpoint      # where its files are readable
         self.capacity_bytes = capacity_bytes
 
@@ -92,9 +94,10 @@ class HubDiscovery:
         mnt = self._mountpoint(part or dev)
         if mnt is None and self.mount:        # headless: mount it ourselves
             mnt = self._automount(part or dev, ident)
-        label = (_blkid(part or dev, "LABEL") or self._fslabel(part or dev)
-                 or (uuid or node)[:12])
-        card = Card(ident, label, uuid or node, mnt, sectors * 512)
+        flabel = _blkid(part or dev, "LABEL") or self._fslabel(part or dev)
+        label = flabel or (uuid or node)[:12]
+        card = Card(ident, label, uuid or node, mnt, sectors * 512,
+                    fs_label=flabel or "")
         if mnt is not None:                   # only cache a card we can read;
             self._cache[ident] = card         # keep re-resolving until it mounts
         return card
@@ -285,7 +288,7 @@ class MockDiscovery:
                 src = os.path.join(root, "card%d" % i)
                 used = _make_fake_card(src, nfiles, kib, seed=i)
                 card = Card("mock-%d" % i, name, "MOCK-%04d" % (0x1000 + i),
-                            src, int(used * 1.25))
+                            src, int(used * 1.25), fs_label=name)
             self.cards.append((card, ins, rm))
 
     def slots(self):

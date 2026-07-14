@@ -12,7 +12,7 @@ The pieces live in sibling modules so the sensitive part is small to review:
   ingest_emit      model -> device line protocol
   ingest_link      serial (by USB VID/PID) + confirm channel
 
-Files land in  dest_base/<uuid>/<ingest_date>/<relpath>  -- a fresh directory
+Files land in  dest_base/<label>-<uuid>/<ingest_date>/<relpath>  -- a fresh directory
 per ingest, so nothing is overwritten and there is no resume/dedup to reason
 about. Wiping needs a device `confirm <i>` AND is a logged dry run unless armed
 by both `[wipe] enabled = true` and `--enable-wipe`.

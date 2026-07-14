@@ -13,7 +13,7 @@ copy/verify/upload is delegated to **rclone**:
   (via the board's BOOTSEL button).
 - **Ingest daemon** (`host/ingest*.py`) — discovers readers in physical order,
   and per card runs `rclone copy` → `rclone check` into
-  `dest_base/<uuid>/<ingest_date>/`, then waits for a confirm to wipe. It is the
+  `dest_base/<label>-<uuid>/<ingest_date>/`, then waits for a confirm to wipe. It is the
   only thing that deletes, and only on an explicit confirm.
 - **Uploader** (`host/uploader.py`) — a *separate* process that pushes verified
   ingest dirs to a cloud remote (rclone) and proves it by re-checking against
@@ -83,11 +83,11 @@ nix run .#slots        # never copies; a diagnostic for the [hub] match. e.g.:
 # 3. Flash the display firmware, install + start the services:
 nix build .#firmware-ui && nix run .#flash
 nix run .#install-service                  # units point at $PWD/ingest.toml
-sudo systemctl enable --now ingest uploader
-journalctl -fu ingest                      # watch it work
+sudo systemctl enable --now innate-sd-ingester-ingest innate-sd-ingester-uploader innate-sd-ingester-http
+journalctl -fu innate-sd-ingester-ingest   # watch it work
 
 # 4. When ready to REALLY delete cards after backup, arm the wipe:
-#    set [wipe] enabled = true in ./ingest.toml, then: sudo systemctl restart ingest
+#    set [wipe] enabled = true in ./ingest.toml, then: sudo systemctl restart innate-sd-ingester-ingest
 #    (it logs "wipe ARMED" loudly at startup).
 ```
 
@@ -101,8 +101,8 @@ The systemd units have the nix store path of the built binary **baked in**, so a
 cd ~/sd-card-media-ingest
 git pull
 nix run .#install-service        # rebuilds + rewrites the unit ExecStart
-sudo systemctl restart ingest uploader
-journalctl -fu ingest            # confirm the new version is running
+sudo systemctl restart innate-sd-ingester-ingest innate-sd-ingester-uploader
+journalctl -fu innate-sd-ingester-ingest   # confirm the new version is running
 ```
 
 (Re-flash the display too, if the firmware changed: `nix run .#flash`.)
@@ -114,11 +114,11 @@ copied *and* hash-verified *and* the operator sends `confirm <i>` — and even
 then it defaults to a logged dry run. Real deletion is armed only by `[wipe]
 enabled = true` in `ingest.toml` (the daemon logs `wipe ARMED` loudly at
 startup). The wipe also re-checks each source (size+mtime) right before deleting
-it, and every action is logged (`journalctl -u ingest`).
+it, and every action is logged (`journalctl -u innate-sd-ingester-ingest`).
 
 ## Cloud upload
 
-The uploader pushes each verified `dest_base/<uuid>/<date>/` to `[remote] base`
+The uploader pushes each verified `dest_base/<label>-<uuid>/<date>/` to `[remote] base`
 (an rclone destination like `b2:bucket/ingest`, `gdrive:ingest`, or a second
 disk), then runs `rclone check` against the remote — which reads the backend's
 stored **SHA1** from object metadata, so it confirms the bytes are really up
@@ -169,20 +169,26 @@ repo at a stable path, since the units point at it.
 
 ## Browse the backups in a browser
 
-`rclone serve http` gives a **read-only** web listing of any remote or path —
-browse and download, no delete. To see **local + cloud in one view**, make a
-`combine` remote that merges the local dest with the bucket, then serve it:
+The **innate-sd-ingester-http** service (installed by `.#install-service`) runs
+`rclone serve http` — a **read-only** web listing (browse + download, no delete)
+of whatever `[http] target` in `ingest.toml` points at, served on `[http] addr`
+(default `:8080`, i.e. `http://<box>:8080`). `target` defaults to the local
+dest; set it to `""` to leave the service idle.
+
+To see **local + cloud in one view**, make a `combine` remote and point
+`target` at it:
 
 ```bash
 nix run .#rclone -- config create both combine \
     upstreams "local=/media/.../ingest remote=b2:my-bucket/ingest"
-nix run .#rclone -- serve http both: --addr :8080     # http://<box>:8080
+# then set  [http] target = "both:"  in ingest.toml, and:
+sudo systemctl restart innate-sd-ingester-http
 ```
 
-Add `--user U --pass P` for basic auth; bind to your LAN, not the public
-internet. For an admin (read-write) UI instead — transfers, deletes — use the
-rclone Web GUI: `nix run .#rclone -- rcd --rc-web-gui` (fetches the GUI bundle
-once, needs internet).
+Run it by hand with `nix run .#http` (append `-- --user U --pass P` for basic
+auth). Keep it on your LAN, not the public internet. For an admin (read-write)
+UI — transfers, deletes — use the rclone Web GUI:
+`nix run .#rclone -- rcd --rc-web-gui` (fetches the GUI bundle once).
 
 ## Board doesn't show up
 
