@@ -1,0 +1,18 @@
+[Unit]
+Description=SD-card ingest uploader (push verified ingests to the cloud, rclone)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# @WORKDIR@ / @UPLOADER@ are substituted by `nix run .#install-service` (the
+# project dir it's run from, and the nix-built binary).
+WorkingDirectory=@WORKDIR@
+ExecStart=@UPLOADER@ --config @WORKDIR@/ingest.toml --interval 60
+# rclone remote + credentials, stored in the project dir by .#store-rclone-config:
+Environment=RCLONE_CONFIG=@WORKDIR@/rclone.conf
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

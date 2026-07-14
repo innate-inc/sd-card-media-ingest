@@ -1,24 +1,33 @@
 # Architecture
 
 The SD-card ingest station copies footage off a bank of USB card readers,
-verifies it, and shows live status on a small LCD. The design splits cleanly
-into a **dumb generic display** (device) and a **smart server** (host): the
-device knows nothing about SD cards, copying, or colours — it just renders the
-segments and text it is told to. All policy lives on the host.
+verifies it, uploads it to the cloud, and shows live status on a small LCD. The
+design splits cleanly into a **dumb generic display** (device) and a **smart
+host**: the device knows nothing about SD cards, copying, or colours — it just
+renders the segments and text it is told to. All policy lives on the host, and
+the risky copy/verify/upload is delegated to **rclone**.
 
 ```
-  readers (USB hub)          host / server                     device
-  ┌───────────────┐   discover + copy + verify          ┌──────────────────┐
-  │ reader 1: SD  │─────────────┐                        │  RP2350 + LCD    │
-  │           µSD │             │  line protocol (serial)│  LVGL UI:        │
-  │ reader 2: ... │──► ingest ──┴──────── /dev/ttyACM ──►│  stacked gauges, │
-  │ ...           │    daemon        (host → device)     │  paging, toggle, │
-  └───────────────┘                                      │  no-signal scrim │
-                                                         └──────────────────┘
-                       ▲                                          │
-                       └───────── confirm <i> (BOOTSEL) ◄─────────┘
-                                  (device → host)
+  readers (USB hub)          host                          device
+  ┌───────────────┐  discover + rclone copy/verify   ┌──────────────────┐
+  │ reader 1: SD  │────────────┐                      │  RP2350 + LCD    │
+  │           µSD │            │  line protocol       │  LVGL UI:        │
+  │ reader 2: ... │─► ingest ──┴──── /dev/ttyACM ────►│  4-stage gauges, │
+  │ ...           │   daemon                          │  paging, toggle  │
+  └───────────────┘      │  ▲                         └──────────────────┘
+             dest_base/  │  └─ confirm <i> (BOOTSEL) ◄──────┘
+             <uuid>/     ▼
+             <date>/  ┌──────────┐   rclone
+                      │ uploader │──────────► cloud (S3 / B2 / Drive)
+                      └──────────┘
 ```
+
+The ingest daemon and the uploader are **decoupled**: the daemon copies +
+verifies to local disk and wipes on confirm; the separate uploader pushes those
+verified dirs to the cloud on its own schedule (a card can be wiped and gone
+while its local copy is still uploading). They coordinate through two per-dir
+files, one writer each: `metadata.json` (the copier's receipt) and
+`uploaded.json` (the uploader's state).
 
 ## Components
 
@@ -29,11 +38,12 @@ the tree, to be replaced; **planned** = designed, not yet code.
 |-----------|-------|--------|----------|
 | **Shared UI core** | `app/` | built | Portable C: `model` (slots + segments), `proto` (parse the serial line protocol), `ui` (LVGL widgets). Compiled unchanged into **both** the device firmware and the simulator. |
 | **Simulator** | `sim/` | built | The `app/` UI in an SDL desktop window; stdin stands in for the serial link and **SPACE** stands in for the board's button (hold = long press, ESC quits). `nix run .#sim`. `--shot` renders headless for tests. |
-| **Device firmware (LVGL)** | `device/` | built | Runs the same `app/` UI via LVGL on the RP2350/ST7789 (VERTICAL scan = landscape 320×172, RGB565 byte-swapped in the flush), reading the line protocol over USB-CDC. Reads the **BOOTSEL button** at runtime for on-device navigation and emits `confirm <i>` back to the host. `nix build .#firmware-ui` → uf2; `nix run .#flash`. The earlier WSI1 image firmware lives on in `firmware/` (`nix run .#flash-image`). |
-| **Host ingest daemon** | `host/ingest.py` | built | Discovers readers behind the hub in physical order (`/dev/disk/by-path`), runs the copier, and emits the line protocol. `--dry-run` runs the full lifecycle over fake cards with no hardware — this is the canonical driver for the sim/board: `nix run .#ingest -- --dry-run \| nix run .#sim`. Stdlib only. |
-| **Copier** | `host/ingest.py` | built | Per card: copy → hash-verify → manifest → await `confirm <i>` → wipe. Wiping is a triple-guarded dry-run by default (see `INGEST_PLAN.md`). |
-| **Tests** | `tests/` | built | `nix flake check`: a `proto` unit test (serial lines → asserted model), `ingest-unit` (the daemon's copier/emitter/wipe-guards over a fake card tree), `ingest-render` (real daemon `--dry-run` → real LVGL → non-blank frame), and `sim-render` (a fixed serial feed → real LVGL → non-blank frame). |
-| **Legacy display driver** | `host/` | legacy | The superseded `ingest_display.py` (JSON-on-stdin → PIL → WSI1 frames — a *different* protocol) plus `send_image.py`/`wire.py`, kept for the WSI1 image firmware. |
+| **Device firmware (LVGL)** | `device/` | built | Runs the same `app/` UI via LVGL on the RP2350/ST7789 (VERTICAL scan = landscape 320×172, RGB565 byte-swapped in the flush), reading the line protocol over USB-CDC. Reads the **BOOTSEL button** at runtime for on-device navigation and emits `confirm <i>` back to the host. `nix build .#firmware-ui` → uf2; `nix run .#flash`. |
+| **Host ingest daemon** | `host/ingest*.py` | built | Discovers readers in physical order (`/dev/disk/by-path`), runs the copier, and emits the line protocol. Split into small modules — `ingest_config`, `ingest_discovery`, `ingest_copier` (**the only file that deletes**), `ingest_emit`, `ingest_link`, thin `ingest.py`. `--dry-run` runs the full lifecycle over fake cards: `nix run .#ingest -- --dry-run \| nix run .#sim`. |
+| **Copier** | `host/ingest_copier.py` | built | Per card: `scan → rclone copy → rclone check → SHA1SUMS receipt + metadata.json → pending → guarded wipe`. rclone owns the whole-dir copy + independent-double-read verify; the wipe stays ours (confirm-gated, dry-run by default, per-file size+mtime guard). |
+| **Uploader** | `host/uploader.py` | built | Separate process (`nix run .#uploader`): pushes verified ingest dirs to the cloud with rclone, then verifies against the remote's own metadata hashes (no download) and writes `uploaded.json`. Decoupled from the daemon. |
+| **systemd** | `deploy/` | built | `ingest.service` + `uploader.service`, installed by `nix run .#install-service` (bakes binary paths + the project dir as `WorkingDirectory`, so they read `./ingest.toml` and `./rclone.conf`). |
+| **Tests** | `tests/` | built | `nix flake check`: `proto` (serial lines → asserted model), `ingest-unit` (copier + emitter + uploader over a fake card tree, real rclone), `ingest-render` (real daemon `--dry-run` → real LVGL → non-blank frame), `sim-render` (fixed serial feed → non-blank frame). |
 
 ## Protocol (host → device)
 
@@ -77,7 +87,7 @@ Field meanings:
 - `pN cN` — **all four pairs are required**; use `permille 0` for unused
   segments. `permille` is 0..1000 of the whole bar (clamped); colour is hex
   `rrggbb`. Segments stack from the bottom; the leftover shows the `bg` colour.
-  The host assigns each segment's meaning (e.g. uploaded / copied / uncopied).
+  The host assigns each segment's meaning (uncopied / copied / verified / uploaded).
 - `label` — the rest of the line, truncated to 23 chars (`MAX_LABEL = 24`).
 
 Per-segment numbers (when `numbers 1`) draw only on segments ≥ 12 px tall and
@@ -148,19 +158,28 @@ per-column slot number is the position indicator.
   `confirm <i>` to stdout. `--shot <ms> <file.ppm>` renders headless (for
   tests).
 
-### Host ingest daemon (`host/ingest.py`, TOML config)
+### Host config (`ingest.toml`, in the project dir)
 The host config decides *everything the device doesn't*:
-- **Serial**: which port the device is on.
+- **Serial**: the device is found by USB **VID/PID** (`[serial]`), or pipe mode.
 - **Hub selection**: which USB hub's readers to watch (ignore system disks).
-- **Destination**: `dest_base`; files land in `dest_base/<partition-UUID>/`.
-- **Hashing**: algorithm; copy is verified before it counts.
-- **Segments**: the mapping of meaning → colour (uploaded / copied / uncopied)
-  and the empty-space colour, plus `numbers` on/off. The host computes each
-  segment's permille from bytes and sends them.
-- **Confirmation**: how a human approves a wipe (button / CLI / …).
+- **Destination**: `dest_base`; files land in `dest_base/<uuid>/<ingest_date>/`.
+- **Hashing**: `[hash] algo` — **sha1** by default (the hash Drive/B2/S3 all
+  serve from metadata, so the remote is verifiable without downloading).
+- **Segments**: colours for the four pipeline stages + the empty colour, plus
+  `numbers`. Okabe-Ito (colourblind-safe) by default.
+- **Remote**: `[remote] base` — the rclone destination for the uploader (empty
+  = no uploading). Credentials live in rclone's own config.
+- **Wipe**: `[wipe] enabled = true` arms real deletion (the daemon logs
+  `wipe ARMED` at startup); otherwise a confirm only logs what it would delete.
 
 ### Copier state machine (per card)
-`idle → copying → verifying → pending (verified, manifest written) →
-[human confirm] → wiping → empty`. Deletion happens **only** at the end, after
-*all* files are copied and hash-verified and a human confirms. See
-`INGEST_PLAN.md` for detail.
+`idle → copying → verifying → pending (verified, SHA1SUMS + metadata.json
+written) → [confirm] → wiping → empty`. Copy + verify are `rclone copy` then
+`rclone check`; deletion happens **only** at the end, after every file is
+verified and a human confirms, and is a dry-run unless armed. The separate
+uploader later writes `uploaded.json` (it never touches `metadata.json`).
+
+### The four display stages
+The bar climbs through **uncopied → copied → verified → uploaded** (orange →
+yellow → blue → green, Okabe-Ito). `uploaded` is driven by the uploader via
+`uploaded.json`, so it fills for a card still present when its upload completes.

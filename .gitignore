@@ -2,6 +2,9 @@
 result
 result-*
 
+# Secrets: rclone remote config stored in the project dir (.#store-rclone-config)
+rclone.conf
+
 # CMake / build artifacts
 build/
 *.uf2

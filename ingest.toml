@@ -1,0 +1,52 @@
+# ingest daemon configuration (see INGEST_PLAN.md / ARCHITECTURE.md).
+#
+# Every value has a built-in default (see DEFAULTS in ingest_config.py); omit
+# anything to keep the default. CLI flags (--vid, --dest, --hub-prefix, ...)
+# override.
+
+[serial]
+# The device is found by USB VID/PID (its /dev/ttyACM* name isn't stable).
+# Leave both "" for pipe mode (protocol on stdout, confirms on stdin).
+vid = "2e8a"         # Raspberry Pi / RP2350
+pid = ""             # "" = match any product id under that vendor
+
+[hub]
+# /dev/disk/by-path prefix of the reader hub. Only block devices under this
+# prefix are ever touched -- system disks and the ingest SSD are invisible.
+# Find yours with: ls -l /dev/disk/by-path | grep usb
+path_prefix = "pci-0000:00:14.0-usb-0:2"
+
+[dest]
+base = "/media/jetson1/jetson_backup/ingest/"   # files land in base/<uuid>/<date>/
+
+[hash]
+algo = "sha1"                  # common hash across Google Drive + Backblaze B2
+                               # (so the remote can be verified from metadata,
+                               # no download). rclone hash name; upper-cased.
+
+[segments]
+# Okabe-Ito, colourblind-safe. The four pipeline stages the bar climbs through.
+uncopied = "#E69F00"           # orange - still only on the card
+copied   = "#F0E442"           # yellow - copied to local disk, not verified
+verified = "#0072B2"           # blue   - hash-verified local copy
+uploaded = "#009E73"           # green  - pushed to the cloud remote
+empty    = "#202020"           # bg / free space
+numbers  = true                # per-segment GB numbers on the bars
+
+[poll]
+interval_ms = 500              # discovery + display tick; also the hb period
+
+[wipe]
+# SAFETY: with false (the default), a confirmed wipe only *logs* what it would
+# delete. Set true to actually erase cards after a confirm. That's the only
+# switch -- the ingest daemon logs "wipe ARMED" loudly at startup when it's on.
+enabled = false
+
+[remote]
+# Where the (separate) uploader pushes verified ingests, as an rclone
+# destination prefix. Empty = no uploading. The remote + credentials live in
+# rclone's own config (`rclone config`); only the path prefix goes here.
+#   base = "b2:my-bucket/ingest"      # Backblaze B2
+#   base = "gdrive:ingest"            # Google Drive
+#   base = "/mnt/backup2/ingest"      # a second local disk
+base = ""

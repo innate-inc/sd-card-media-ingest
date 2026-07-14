@@ -1,7 +1,8 @@
 # Decision log (chronological)
 
-Newest at the bottom. Topical rationale lives in `DESIGN.md`; this file is the
-running order-of-events of *why things changed*.
+Newest at the bottom; this file is the running order-of-events of *why things
+changed*. (Items 1–8 describe the original USB image-display firmware, since
+removed — see item 55.)
 
 ## Firmware & display foundation
 1. **Identified the board** via the Amazon listing (Chrome) + Waveshare wiki:
@@ -189,3 +190,56 @@ running order-of-events of *why things changed*.
     `copy_field()`. Synced `ARCHITECTURE.md`/`INGEST_PLAN.md`/`README.md`: host
     daemon now "built", nav table reflects the single 5 s hold (item 43), the
     heartbeat pixel is gone (item 44).
+
+## Simplify + prune
+55. **Daemon split + simplified; image stack deleted.** `host/ingest.py` was
+    split into `ingest_{config,discovery,copier,emit,link}.py` (the copier — the
+    only file that deletes — isolated at ~250 lines); dest layout is
+    `base/<uuid>/<ingest_date>/` so there's no resume/dedup/dup-claim logic;
+    hash algo defaulted to `md5`; serial found by USB VID/PID via pyserial (`[serial]`
+    `vid`/`pid`, not `port`). The original **WSI1 image-display stack is removed**
+    (items 1–8): `firmware/main.c` + its build, `host/{wire,send_image,ingest_display}.py`,
+    the `firmware`/`flash-image`/`send` flake outputs, and `DESIGN.md`. The
+    vendored Waveshare LCD driver moved `firmware/lib/` → `device/lib/` (the LVGL
+    device firmware still uses it). Supersedes the "kept as flash-image" note in
+    item 31.
+
+## rclone core + cloud upload
+56. **Copy/verify delegated to rclone; cloud upload; 4-stage display.**
+    - **rclone** owns the risky part: per card, `rclone copy` then
+      `rclone check --one-way` (an independent double-read verify — hashes both
+      sides from fresh reads, which is the whole point of verifying before a
+      wipe). Live progress is parsed from rclone's `--stats` JSON. The receipt is
+      `rclone sha1sum` output (`SHA1SUMS`, `sha1sum -c`-able). The guarded wipe
+      stays hand-rolled. Most of the hand-written copy/hash code was deleted.
+    - **Hash → sha1**: the one hash Google Drive, Backblaze B2, and S3 all serve
+      from object metadata, so the remote can be verified without downloading.
+    - **Separate uploader** (`host/uploader.py`, `nix run .#uploader`): pushes
+      verified dirs to `[remote] base` via rclone, verifies against the remote's
+      metadata hashes (no download), records `REMOTE_SHA1SUMS` proof. Decoupled
+      from the daemon so a wiped card's copy still uploads.
+    - **Two single-writer JSON files** per ingest dir replaced the `.uploaded`
+      marker (so no file is co-owned): the copier writes an immutable
+      `metadata.json` receipt (present == verified); the uploader writes
+      `uploaded.json` (present == uploaded, + `uploaded_bytes`); the daemon reads
+      `uploaded.json` to fill the display's green. "Ready to upload" = has
+      metadata.json, no uploaded.json.
+    - **Display = 4 colourblind-safe stages** (Okabe-Ito): uncopied (orange) →
+      copied (yellow) → verified (blue) → uploaded (green).
+    - **Wipe arming** moved from `--enable-wipe` CLI to env `INGEST_ENABLE_WIPE=1`
+      (systemd-friendly). Added `deploy/*.service` + `nix run .#install-service`.
+
+## Logging, config location, wipe arming
+57. **Verbose logging, config in the project dir, TOML-only wipe arming.**
+    - **Logging**: switched from ad-hoc `print(stderr)` to the stdlib `logging`
+      module (timestamps + levels), and log LOTS at sensible levels: slot
+      insert/remove with drive sizes, scan results (files + bytes), every state
+      transition, per-file wipe intent, `wipe ARMED` at startup, and the
+      previously-silent error states (HASH FAIL / COPY ERR / DEST FULL /
+      REMOVED / SRC CHANGED, all via `fail()`).
+    - **Config from the project dir**: `ingest.toml` moved to the repo root and
+      is the default `--config` (`./ingest.toml`), not `/etc`. `install-service`
+      bakes `$PWD` into the units as `WorkingDirectory` so the services read
+      `./ingest.toml` + `./rclone.conf`.
+    - **Wipe arming is TOML-only** now: `[wipe] enabled = true` is the single
+      switch (dropped the `INGEST_ENABLE_WIPE` env var); revises item 56.
