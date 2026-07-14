@@ -1,0 +1,23 @@
+# Nix
+result
+result-*
+
+# CMake / build artifacts
+build/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.map
+*.dis
+
+# Vendored driver build leftovers
+firmware/lib/**/*.gch
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/
+.direnv/
