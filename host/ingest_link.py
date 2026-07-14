@@ -7,6 +7,7 @@ mode needs no dependency.
 """
 import logging
 import re
+import termios
 
 log = logging.getLogger("ingest")
 
@@ -35,10 +36,20 @@ class SerialLink:
         self.s = serial.Serial(port, timeout=None)
 
     def write(self, data):
-        self.s.write(data.encode("ascii", "replace"))
+        self._tty(lambda: self.s.write(data.encode("ascii", "replace")))
 
     def flush(self):
-        self.s.flush()
+        self._tty(self.s.flush)
+
+    @staticmethod
+    def _tty(fn):
+        # pyserial lets termios.error (a raw tty I/O failure -- e.g. the board
+        # unplugged mid-write) escape; it is NOT an OSError, so translate it so
+        # the emitter treats it as a skippable link hiccup instead of crashing.
+        try:
+            fn()
+        except termios.error as e:
+            raise OSError(e.args[0] if e.args else 5, "serial tty error") from e
 
     def __iter__(self):
         while True:

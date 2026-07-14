@@ -8,6 +8,8 @@ column of its own (insertion order); the physical slot index is internal.
 import hashlib
 import logging
 import os
+import re
+import subprocess
 import time
 
 log = logging.getLogger("ingest")
@@ -37,12 +39,16 @@ class HubDiscovery:
     """
 
     BY_PATH = "/dev/disk/by-path"
+    MOUNT_ROOT = "/run/ingest"            # where we auto-mount cards (headless)
 
-    def __init__(self, hub_cfg):
+    def __init__(self, hub_cfg, mount=False):
         # Prefer matching readers by their USB vid:pid (robust to which port the
         # hub is in, and can't pick up the target SSD or the display board); fall
         # back to a /dev/disk/by-path prefix if one is configured.
         self._cache = {}                  # ident -> resolved Card (held while present)
+        self.mount = mount                # auto-mount unmounted cards ourselves?
+        self._mounts = {}                 # ident -> mountpoint we created
+        self._mount_failed = set()        # idents we've already warned we can't mount
         vid = (hub_cfg.get("vid") or "").lower()
         pid = (hub_cfg.get("pid") or "").lower()
         prefix = hub_cfg.get("path_prefix") or ""
@@ -75,12 +81,16 @@ class HubDiscovery:
             return UNKNOWN                    # transient read error, not removal
         if sectors == 0:
             self._cache.pop(ident, None)      # media gone; forget it
+            self._unmount(ident)              # drop any mount we made for it
+            self._mount_failed.discard(ident)
             return None
         cached = self._cache.get(ident)
         if cached is not None:
             return cached                     # identity is fixed while inserted
         part, uuid = self._partition(dev)
         mnt = self._mountpoint(part or dev)
+        if mnt is None and self.mount:        # headless: mount it ourselves
+            mnt = self._automount(part or dev, ident)
         label = self._fslabel(part or dev) or (uuid or node)[:12]
         card = Card(ident, label, uuid or node, mnt, sectors * 512)
         if mnt is not None:                   # only cache a card we can read;
@@ -98,7 +108,10 @@ class HubDiscovery:
 
     @staticmethod
     def _fslabel(dev):
-        return _reverse_symlink("/dev/disk/by-label", dev)
+        name = _reverse_symlink("/dev/disk/by-label", dev)
+        # by-label names are udev-escaped (space -> \x20); decode for the display.
+        return re.sub(r"\\x([0-9a-fA-F]{2})",
+                      lambda m: chr(int(m.group(1), 16)), name) if name else name
 
     @staticmethod
     def _mountpoint(dev):
@@ -112,6 +125,46 @@ class HubDiscovery:
         except OSError:
             pass
         return None                           # present but not mounted
+
+    def _automount(self, part, ident):
+        """Mount a present-but-unmounted card so the copier can read it (a
+        headless station has no desktop auto-mounter). Mounts read-write --
+        the wipe deletes from here -- to a per-device dir under MOUNT_ROOT, and
+        remembers it so removal unmounts it. Returns the mountpoint, or None."""
+        mp = os.path.join(self.MOUNT_ROOT, os.path.basename(part))
+        try:
+            os.makedirs(mp, exist_ok=True)
+            if os.path.ismount(mp):           # a stale mount (e.g. after a crash)
+                subprocess.run(["umount", "-l", mp], capture_output=True)
+            subprocess.run(
+                ["mount", "-o", "noatime,nosuid,nodev,noexec", part, mp],
+                check=True, capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            if ident not in self._mount_failed:   # once, not every tick
+                self._mount_failed.add(ident)
+                err = getattr(e, "stderr", b"") or b""
+                log.warning("could not auto-mount %s: %s", part,
+                            err.decode("utf-8", "replace").strip() or e)
+            return None
+        self._mounts[ident] = mp
+        self._mount_failed.discard(ident)
+        log.info("auto-mounted %s at %s (rw)", part, mp)
+        return mp
+
+    def _unmount(self, ident):
+        """Unmount (and clean up) a card we auto-mounted; no-op otherwise."""
+        mp = self._mounts.pop(ident, None)
+        if not mp:
+            return
+        try:
+            subprocess.run(["umount", mp], check=True, capture_output=True)
+        except (OSError, subprocess.SubprocessError):
+            subprocess.run(["umount", "-l", mp], capture_output=True)  # lazy fallback
+        try:
+            os.rmdir(mp)
+        except OSError:
+            pass
+        log.info("unmounted %s", mp)
 
 
 def _slots_by_prefix(prefix):

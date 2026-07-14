@@ -99,7 +99,9 @@
 
           ingest = pkgs.writeShellApplication {
             name = "ingest";
-            runtimeInputs = [ pythonEnv pkgs.rclone ];   # rclone does copy+verify
+            # rclone does copy+verify; util-linux gives mount/umount for the
+            # headless auto-mount (writeShellApplication restricts PATH).
+            runtimeInputs = [ pythonEnv pkgs.rclone pkgs.util-linux ];
             text = useLocalRclone + ''
               exec python ${./host}/ingest.py "$@"
             '';

@@ -113,7 +113,7 @@ def main():
         hub = dict(cfg["hub"])
         if args.hub_prefix:                    # explicit prefix overrides vid/pid
             hub["path_prefix"], hub["vid"] = args.hub_prefix, ""
-        disco = HubDiscovery(hub)
+        disco = HubDiscovery(hub, mount=True)  # headless: mount cards ourselves
         cfg["dest"]["base"] = args.dest or cfg["dest"]["base"]
     log.info("dest base: %s ; %d reader slot(s)",
              cfg["dest"]["base"], len(disco.slots()))
@@ -130,6 +130,7 @@ def main():
     # confirm number never shifts under it) until removal, which frees it again.
     jobs = {}                                  # physical slot index -> CardJob
     used_cols = set()                          # display columns currently taken
+    unmounted_warned = set()                   # slots warned about (not mounted)
     interval = cfg["poll"]["interval_ms"] / 1000.0
     pending_since = {}                         # slot -> t (for --auto-confirm)
     tick = 0
@@ -150,11 +151,16 @@ def main():
                 used_cols.discard(job.col)
                 del jobs[i]
                 job = None
+            if card is None:
+                unmounted_warned.discard(i)    # slot empty again; re-arm the warning
             if card is not None and job is None:
                 if card.mountpoint is None:
-                    log.warning("%s present but not mounted; skipping",
-                                card.label)
+                    if i not in unmounted_warned:   # once, not every tick
+                        unmounted_warned.add(i)
+                        log.warning("%s present but could not be mounted; "
+                                    "skipping", card.label)
                     continue                   # present but unreadable; skip
+                unmounted_warned.discard(i)
                 col = _free_col(used_cols)
                 used_cols.add(col)
                 log.info("slot %d: %s inserted (%s, uuid %s)", col, card.label,
