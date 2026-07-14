@@ -135,26 +135,24 @@
             echo "Installed. Start with:  sudo systemctl enable --now ingest uploader"
           '';
 
-          # Store your rclone config in the project dir (./rclone.conf, gitignored
-          # -- it holds secrets). ingest/uploader auto-use it when run from here.
-          # `nix run .#store-rclone-config [path-to-rclone.conf]`.
-          store-rclone-config = pkgs.writeShellScriptBin "store-rclone-config" ''
-            set -eu
-            src="''${1:-$(${pkgs.rclone}/bin/rclone config file | tail -1)}"
-            if [ ! -f "$src" ]; then
-              echo "no rclone config at '$src' -- run 'rclone config' first, or pass the path" >&2
-              exit 1
-            fi
-            install -m600 "$src" ./rclone.conf
-            echo "Stored -> $PWD/rclone.conf (gitignored). ingest/uploader use it from this dir."
-          '';
+          # rclone against the project's ./rclone.conf (gitignored -- it holds
+          # secrets). `nix run .#rclone -- config` sets up your remote right here;
+          # ingest/uploader then auto-use the same file.
+          rclone = pkgs.writeShellApplication {
+            name = "rclone";
+            runtimeInputs = [ pkgs.rclone ];
+            text = ''
+              export RCLONE_CONFIG="''${RCLONE_CONFIG:-$PWD/rclone.conf}"
+              exec rclone "$@"
+            '';
+          };
         in
         {
           flash = { type = "app"; program = "${flash}/bin/flash"; };
           ingest = { type = "app"; program = "${ingest}/bin/ingest"; };
           uploader = { type = "app"; program = "${uploader}/bin/uploader"; };
           install-service = { type = "app"; program = "${install-service}/bin/install-service"; };
-          store-rclone-config = { type = "app"; program = "${store-rclone-config}/bin/store-rclone-config"; };
+          rclone = { type = "app"; program = "${rclone}/bin/rclone"; };
           sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
           default = self.apps.${system}.sim;
         });

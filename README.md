@@ -49,8 +49,7 @@ nix flake check          # run the test suite (proto, copier+uploader, renders)
 ```bash
 # Run these from your cloned repo dir (install-service bakes it into the units).
 # 1. One-time cloud remote for the uploader (skip if you only back up locally):
-rclone config                             # make a remote, e.g. name it "b2"
-nix run .#store-rclone-config             # save it into ./rclone.conf (gitignored)
+nix run .#rclone -- config                # make a remote "b2" -> ./rclone.conf
 
 # 2. Install the systemd services + a starter /etc/ingest.toml:
 nix run .#install-service
@@ -100,8 +99,8 @@ from rclone's own config (`rclone config`).
 #   2. Application Keys -> Add a New Application Key, restricted to that bucket,
 #      Read and Write. Copy the keyID and applicationKey (shown only once).
 
-# Configure the rclone remote, interactively:
-rclone config
+# Configure the rclone remote (writes ./rclone.conf), interactively:
+nix run .#rclone -- config
 #   n) New remote          name> b2
 #   Storage>               b2            # Backblaze B2
 #   account (Account ID or Application Key ID)>  <keyID>
@@ -109,11 +108,11 @@ rclone config
 #   ...accept defaults, y) keep, q) quit
 
 # ...or in one shot:
-rclone config create b2 b2 account <keyID> key <applicationKey>
+nix run .#rclone -- config create b2 b2 account <keyID> key <applicationKey>
 
 # Verify:
-rclone lsd b2:                    # lists your buckets
-rclone ls  b2:myco-ingest         # (empty at first)
+nix run .#rclone -- lsd b2:              # lists your buckets
+nix run .#rclone -- ls  b2:myco-ingest   # (empty at first)
 
 # Then in /etc/ingest.toml:
 #   [remote]
@@ -124,10 +123,11 @@ B2 stores each object's **SHA1** in metadata (rclone supplies it even for large
 multipart files), so `rclone check`/`sha1sum` verify the upload from metadata
 alone — no download. That's why the pipeline hashes with SHA1.
 
-**Where the remote config lives:** `nix run .#store-rclone-config` saves it to
-**`./rclone.conf`** in the project dir (mode 600, gitignored — it holds secrets).
-The `ingest`/`uploader` apps auto-use it when run from that dir, and
-`nix run .#install-service` bakes that dir into the uploader unit as
+**Where the remote config lives:** `nix run .#rclone -- …` is just rclone with
+`RCLONE_CONFIG` pointed at **`./rclone.conf`** in the project dir (gitignored —
+it holds secrets), so `nix run .#rclone -- config` sets up your remote right
+there. The `ingest`/`uploader` apps auto-use the same file when run from that
+dir, and `nix run .#install-service` bakes that dir into the uploader unit as
 `WorkingDirectory` + `RCLONE_CONFIG` — so no `/etc`, no root config. Keep the
 repo at a stable path, since the units point at it.
 
