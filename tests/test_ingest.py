@@ -218,6 +218,25 @@ class EmitterTest(unittest.TestCase):
         # legend clear + 5 rows (uploaded/verified/copied/uncopied/free space)
         self.assertEqual(sum(l.startswith("legend ") for l in lines), 6)
 
+    def test_removed_column_is_cleared_after_list_shrinks(self):
+        # A card's column must be blanked when it's gone -- even though the
+        # daemon then passes a shorter list (the removed column is off the end).
+        out = io.StringIO()
+        em = Emitter(out, DEFAULTS["segments"])
+        job = CardJob.__new__(CardJob)
+        job.card = Card("m", "C", "U", "/x", 1_000_000_000)
+        job.state, job.error, job.dest = COPYING, "", "/d"
+        job.total_bytes = job.copied_bytes = job.verified_bytes = 0
+        job.uploaded_bytes = 0
+        em.tick([job, job])                     # two cards -> columns 0 and 1
+        out.truncate(0); out.seek(0)
+        em.tick([job])                          # column 1's card removed
+        lines = out.getvalue().splitlines()
+        self.assertIn("slot 1 -1 -1 idle 0 0 0 0 0 0 0 0 empty", lines)
+        out.truncate(0); out.seek(0)
+        em.tick([job])                          # already cleared -> not re-sent
+        self.assertNotIn("slot 1", out.getvalue())
+
 
 class UploaderTest(unittest.TestCase):
     def test_upload_verifies_against_remote_and_marks_done(self):

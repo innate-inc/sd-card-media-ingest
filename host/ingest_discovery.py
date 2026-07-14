@@ -1,8 +1,9 @@
 """Discovery: which slots exist, and what card (if any) is in each.
 
-A "slot" is a fixed physical position (a reader LUN); its index never moves
-while the daemon runs, so bars hold their place on the display. A slot is
-occupied when its block device reports non-zero size (media present).
+A "slot" here is a fixed physical position (a reader LUN); its index never
+moves while the daemon runs. A slot is occupied when its block device reports
+non-zero size (media present). The daemon assigns each present card a display
+column of its own (insertion order); the physical slot index is internal.
 """
 import hashlib
 import logging

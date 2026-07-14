@@ -28,7 +28,8 @@ class Emitter:
         self.uploaded = color(seg_cfg["uploaded"])
         self.bg = color(seg_cfg["empty"])
         self.numbers = 1 if as_bool(seg_cfg.get("numbers", True)) else 0
-        self._paths = {}                       # last `path` sent per slot
+        self._paths = {}                       # last `path` sent per column
+        self._drawn = set()                    # columns with a bar drawn last tick
         self._last_warn = 0.0
 
     def emit(self, line):
@@ -71,14 +72,23 @@ class Emitter:
         self.emit("legend %06x free space" % self.bg)
 
     def tick(self, jobs):
-        """jobs: list of CardJob-or-None in fixed physical slot order."""
-        for i, job in enumerate(jobs):
-            # an absent reader and a wiped slot are the same blank row
+        """jobs: a list of CardJob-or-None indexed by display column (the cards
+        currently plugged in, in the order they were inserted). A column that
+        held a bar last tick but is gone now is blanked once so the device
+        clears it -- even if the list has since shrunk past it."""
+        drawn = set()
+        n = len(jobs)
+        hi = max([n] + [c + 1 for c in self._drawn])   # also clear freed columns
+        for c in range(hi):
+            job = jobs[c] if c < n else None
             if job is None or job.state == EMPTY:
-                self.emit("slot %d -1 -1 idle 0 0 0 0 0 0 0 0 empty" % i)
+                if c < n or c in self._drawn:      # in-range gap, or a freed column
+                    self.emit("slot %d -1 -1 idle 0 0 0 0 0 0 0 0 empty" % c)
                 continue
-            self._path(i, job)
-            self.emit(self._slot_line(i, job))
+            self._path(c, job)
+            self.emit(self._slot_line(c, job))
+            drawn.add(c)
+        self._drawn = drawn
         self.emit("hb")
         self.flush()
 

@@ -72,12 +72,13 @@ nix run .#rclone -- config                # make a remote "b2" -> ./rclone.conf
 #    Leave [wipe] enabled = false until you trust it (dry-run logging).
 $EDITOR ingest.toml
 
-# Check discovery: plug cards/drives in and see how ports map to slot numbers.
-nix run .#slots        # read-only; never copies. e.g.:
-#   slot port     dev   size       card
+# Check discovery: list what's plugged into the hub right now (read-only).
+nix run .#slots        # never copies; a diagnostic for the [hub] match. e.g.:
+#   #    port     dev   size       card
 #   1    2.1.1    sdd   -          (empty)
 #   5    2.2      sdb   256.0 GB   EXTREME
 #   ...
+# The live display numbers cards by insertion order, not by these ports.
 
 # 3. Flash the display firmware, install + start the services:
 nix build .#firmware-ui && nix run .#flash

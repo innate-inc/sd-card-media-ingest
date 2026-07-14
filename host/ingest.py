@@ -54,6 +54,15 @@ def open_display(cfg, args):
     return sys.stdin, sys.stdout
 
 
+def _free_col(used):
+    """Lowest display-column index not currently taken (fills gaps left by
+    removed cards, so the list stays compact)."""
+    c = 0
+    while c in used:
+        c += 1
+    return c
+
+
 def _auto_confirm(jobs, pending_since, after_s):
     """[--dry-run demo only] confirm a slot S seconds after it goes pending."""
     now = time.monotonic()
@@ -116,7 +125,11 @@ def main():
                      daemon=True).start()
 
     emitter.preamble()
-    jobs = {}                                  # slot index -> CardJob
+    # The display is a list of the cards plugged in, in insertion order: each
+    # gets the lowest free display column when it appears and keeps it (so its
+    # confirm number never shifts under it) until removal, which frees it again.
+    jobs = {}                                  # physical slot index -> CardJob
+    used_cols = set()                          # display columns currently taken
     interval = cfg["poll"]["interval_ms"] / 1000.0
     pending_since = {}                         # slot -> t (for --auto-confirm)
     tick = 0
@@ -130,33 +143,40 @@ def main():
                 continue                       # transient probe error; leave as-is
             job = jobs.get(i)
             if job and (card is None or card.ident != job.card.ident):
-                log.info("slot %d: %s removed", i, job.card.label)
+                log.info("slot %d: %s removed", job.col, job.card.label)
                 job.abort = True               # stop its worker
                 if job.state in (IDLE, COPYING, VERIFYING, WIPING):
                     job.fail("REMOVED")
+                used_cols.discard(job.col)
                 del jobs[i]
                 job = None
             if card is not None and job is None:
                 if card.mountpoint is None:
-                    log.warning("slot %d: %s present but not mounted; skipping",
-                                i, card.label)
+                    log.warning("%s present but not mounted; skipping",
+                                card.label)
                     continue                   # present but unreadable; skip
-                log.info("slot %d: %s inserted (%s, uuid %s)", i, card.label,
+                col = _free_col(used_cols)
+                used_cols.add(col)
+                log.info("slot %d: %s inserted (%s, uuid %s)", col, card.label,
                          human_bytes(card.capacity_bytes), card.uuid)
                 job = CardJob(card, cfg, wipe_armed=wipe_armed,
                               throttle_bps=1_500_000 if args.dry_run else 0)
+                job.col = col
                 jobs[i] = job
                 job.start()
 
-        # Wipe confirmations -- the only path to deletion.
+        by_col = {job.col: job for job in jobs.values()}
+
+        # Wipe confirmations -- the only path to deletion. The confirm index is
+        # the display column the operator selected, so it targets what they saw.
         try:
             while True:
-                i = confirms.get_nowait()
-                if i in jobs:
-                    log.info("slot %d: confirm received -> wipe", i)
-                    jobs[i].request_wipe()
+                c = confirms.get_nowait()
+                if c in by_col:
+                    log.info("slot %d: confirm received -> wipe", c)
+                    by_col[c].request_wipe()
                 else:
-                    log.warning("confirm %d ignored (no card)", i)
+                    log.warning("confirm %d ignored (no card)", c)
         except queue.Empty:
             pass
         if args.dry_run and args.auto_confirm:
@@ -167,8 +187,9 @@ def main():
             if job.state == PENDING:
                 job.uploaded_bytes = read_uploaded(job.dest).get("uploaded_bytes", 0)
 
-        # One display frame. Absent slots keep their column (slot count is fixed).
-        emitter.tick([jobs.get(i) for i in range(len(slots))])
+        # One display frame: the present cards in column order.
+        ncols = max(by_col) + 1 if by_col else 0
+        emitter.tick([by_col.get(c) for c in range(ncols)])
 
         tick += 1
         if args.ticks and tick >= args.ticks:

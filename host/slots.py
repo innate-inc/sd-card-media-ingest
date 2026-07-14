@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Print the reader-slot mapping (slot -> hub port -> device -> what's in it)
-and exit. READ-ONLY: never copies or wipes -- run it to see how the physical
-ports map to slot numbers while you plug cards/drives in.
+"""List the drives plugged into the reader hub right now (hub port, device,
+and any card in it), in physical-port order, then exit. READ-ONLY: never copies
+or wipes -- a diagnostic to check the [hub] match and see what's detected while
+you plug cards in. (The live display numbers cards by insertion order, not by
+these ports.)
 
     nix run .#slots           # uses ./ingest.toml (the [hub] vid:pid)
 """
@@ -27,7 +29,7 @@ def main():
 
     disco = HubDiscovery(cfg["hub"])
     probed = disco.slots()
-    print("%-4s %-8s %-5s %-10s %s" % ("slot", "port", "dev", "size", "card"))
+    print("%-4s %-8s %-5s %-10s %s" % ("#", "port", "dev", "size", "card"))
     print("-" * 48)
     for i, (ident, card) in enumerate(zip(disco.slot_ids, probed), start=1):
         m = re.search(r"-usb-\d+:([\d.]+):", ident)

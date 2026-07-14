@@ -73,9 +73,11 @@ hashing so it isn't mistaken for a dead link.
 Field meanings:
 
 - `i` — 0-based slot index (`0..31`, `MAX_SLOTS = 32`); slots render left→right
-  in index order (= physical port order, decided by the host). A `slot` with
-  `i >= count` **auto-extends** the count to `i+1`, so you don't have to send
-  `count` first.
+  in index order. The host assigns each plugged-in card the lowest free index
+  when it appears and holds it until removal (so the list is the cards present,
+  in insertion order, and a card's index — hence its `confirm` number — never
+  shifts while it's in). A `slot` with `i >= count` **auto-extends** the count
+  to `i+1`, so you don't have to send `count` first.
 - `size_mb` — total size in MB, `-1` = unknown (drives the GB numbers).
 - `eta_s` — seconds to completion, `-1` = unknown (drives the ETA text). ETA
   phase shows `done` for status `done`, and falls back to "slot# name" if both
