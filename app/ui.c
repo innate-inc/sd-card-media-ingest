@@ -194,8 +194,17 @@ static void draw_detail(void) {
     lv_label_set_text(g.det_body, body);
     #undef BODY_CLAMP
 
-    lv_obj_set_style_bg_color(g.det_btn, lv_color_hex(0x7A1A1A), 0);
-    lv_label_set_text(g.det_btn_lbl, "HOLD\nTO\nWIPE");
+    /* the delete zone is always present, but it is only armed (dark red,
+     * "HOLD TO WIPE") once the card is wipeable; before that (still copying /
+     * verifying) it is greyed out and holding it does nothing. */
+    if (slot_wipeable(s)) {
+        lv_obj_set_style_bg_color(g.det_btn, lv_color_hex(0x7A1A1A), 0);
+        lv_label_set_text(g.det_btn_lbl, "HOLD\nTO\nWIPE");
+    } else {
+        lv_obj_set_style_bg_color(g.det_btn, lv_color_hex(0x333333), 0);
+        lv_label_set_text(g.det_btn_lbl, "WIPE\nWHEN\nDONE");
+        lv_obj_add_flag(g.det_fill, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void draw_legend(void) {
@@ -364,7 +373,8 @@ static int feed_stale(void) {
  * progress bar toward the arm threshold. */
 static void update_arm_fill(uint32_t now) {
     if (g.det_fill == NULL) return;
-    if (g.nav == NAV_DETAIL && g.pressing && !g.fired) {
+    if (g.nav == NAV_DETAIL && g.pressing && !g.fired
+        && slot_wipeable(&g.model.slots[g.sel])) {
         uint32_t held = now - g.press_start;
         if (held > ARM_MS) held = ARM_MS;
         int h = (int)((uint64_t)UI_H * held / ARM_MS);
@@ -402,7 +412,10 @@ static void housekeeping_cb(lv_timer_t *t) {
     /* a long press fires the moment the hold threshold is reached (not on
      * release), so the arm fill can grow up to it and act on completion.
      * Arming the wipe demands a much longer, deliberate hold than navigation. */
-    uint32_t thr = (g.nav == NAV_DETAIL) ? ARM_MS : LONG_MS;
+    /* a wipeable card in detail demands the long, deliberate ARM_MS hold; any
+     * other press (navigation, or a view-only detail) uses the shorter LONG_MS */
+    uint32_t thr = (g.nav == NAV_DETAIL
+                    && slot_wipeable(&g.model.slots[g.sel])) ? ARM_MS : LONG_MS;
     if (g.pressing && !g.fired && (now - g.press_start) >= thr) {
         g.fired = 1;
         ui_button(UI_BTN_LONG);
@@ -415,11 +428,17 @@ static void housekeeping_cb(lv_timer_t *t) {
         refresh();
     }
 
-    if (g.nav != NAV_BROWSE) return;   /* button drives the view, not the clock */
+    /* The name<->size label toggle keeps ticking in BROWSE and SELECT -- a
+     * click only pauses page auto-advance, not the label cycle. DETAIL stays
+     * static so the hold-to-arm gesture isn't disturbed. */
+    if (g.nav == NAV_DETAIL) return;
 
     int phase = (now / TOGGLE_MS) % 2;
-    int pages = page_count();
-    int page = (pages > 1) ? (int)((now / PAGE_MS) % pages) : 0;
+    int page = g.page;
+    if (g.nav == NAV_BROWSE) {          /* pages auto-advance only when browsing */
+        int pages = page_count();
+        page = (pages > 1) ? (int)((now / PAGE_MS) % pages) : 0;
+    }
     if (phase != g.phase || page != g.page) {
         g.phase = phase;
         g.page = page;
@@ -621,11 +640,11 @@ void ui_button(int kind) {
         break;
     case NAV_SELECT:
         if (total <= 0) { g.nav = NAV_BROWSE; break; }
-        /* only a finished card opens the wipe screen; empty/copying aren't, and
-         * the legend stop (sel == total) is not a card at all */
+        /* long-press opens the detail view of any card (the legend stop, sel ==
+         * total, is not a card). Detail is view-only until the card is
+         * wipeable -- the delete zone only appears then (see draw_detail). */
         if (kind == UI_BTN_LONG) {
-            if (g.sel < total && slot_wipeable(&g.model.slots[g.sel]))
-                g.nav = NAV_DETAIL;
+            if (g.sel < total) g.nav = NAV_DETAIL;
         } else {
             /* short = next card, then the legend page (if any), then wrap */
             int stops = total + (has_legend() ? 1 : 0);
