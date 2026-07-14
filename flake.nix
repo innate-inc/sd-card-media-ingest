@@ -215,6 +215,7 @@
               pkgs.picotool
               pkgs.python3
               pythonEnv
+              pkgs.rclone            # the copier/uploader shell out to it
               picoSdk
             ];
             PICO_SDK_PATH = "${picoSdk}/lib/pico-sdk";
@@ -224,6 +225,7 @@
               echo "  flash:      nix run .#flash"
               echo "  simulator:  nix run .#sim"
               echo "  daemon:     nix run .#ingest -- --dry-run | nix run .#sim"
+              echo "  tests:      python3 tests/test_ingest.py   (or: nix flake check)"
             '';
           };
         });

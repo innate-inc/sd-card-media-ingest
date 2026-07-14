@@ -44,6 +44,17 @@ nix run .#ingest -- --dry-run --auto-confirm 2 | nix run .#sim
 nix flake check          # run the test suite (proto, copier+uploader, renders)
 ```
 
+**Dev shell** — `nix develop` drops you into a shell with the whole toolchain
+(arm-none-eabi + cmake + Pico SDK for the firmware, python + pyserial, rclone,
+picotool). From there you can run things directly:
+
+```bash
+nix develop
+python3 tests/test_ingest.py                     # host tests (needs rclone -- it's here)
+python3 host/ingest.py --dry-run | nix run .#sim  # run the daemon from source
+cmake -S device -B build -DLVGL_DIR=... && cmake --build build   # build fw by hand
+```
+
 ### Quickstart: install / setup / config (on the box)
 
 ```bash
