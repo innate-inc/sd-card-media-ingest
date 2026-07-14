@@ -91,10 +91,17 @@
           # confirm -> (dry-run) wipe, emitting the same protocol. Split across
           # host/ingest*.py; pyserial finds the device by USB VID/PID.
           # `--dry-run` runs the full pipeline over fake cards, no hardware.
+          # ./rclone.conf in the working dir wins (see .#store-rclone-config).
+          useLocalRclone = ''
+            if [ -z "''${RCLONE_CONFIG:-}" ] && [ -f "$PWD/rclone.conf" ]; then
+              export RCLONE_CONFIG="$PWD/rclone.conf"
+            fi
+          '';
+
           ingest = pkgs.writeShellApplication {
             name = "ingest";
             runtimeInputs = [ pythonEnv pkgs.rclone ];   # rclone does copy+verify
-            text = ''
+            text = useLocalRclone + ''
               exec python ${./host}/ingest.py "$@"
             '';
           };
@@ -104,7 +111,7 @@
           uploader = pkgs.writeShellApplication {
             name = "uploader";
             runtimeInputs = [ pkgs.python3 pkgs.rclone ];
-            text = ''
+            text = useLocalRclone + ''
               exec python3 ${./host}/uploader.py "$@"
             '';
           };
@@ -116,8 +123,10 @@
             echo "Installing ingest + uploader systemd units (uses sudo)..."
             sed "s|@INGEST@|${ingest}/bin/ingest|" ${./deploy/ingest.service} \
               | sudo tee /etc/systemd/system/ingest.service >/dev/null
-            sed "s|@UPLOADER@|${uploader}/bin/uploader|" ${./deploy/uploader.service} \
+            sed -e "s|@UPLOADER@|${uploader}/bin/uploader|" -e "s|@WORKDIR@|$PWD|" \
+              ${./deploy/uploader.service} \
               | sudo tee /etc/systemd/system/uploader.service >/dev/null
+            echo "  uploader WorkingDirectory + RCLONE_CONFIG -> $PWD"
             if [ ! -f /etc/ingest.toml ]; then
               sudo cp ${./host/ingest.toml} /etc/ingest.toml
               echo "Wrote /etc/ingest.toml -- edit [dest] base, [remote] base, [wipe] enabled."
@@ -126,19 +135,18 @@
             echo "Installed. Start with:  sudo systemctl enable --now ingest uploader"
           '';
 
-          # Copy your rclone config to /etc/rclone.conf (root-only) so the
-          # uploader service -- which runs as root -- can see your remote.
-          # `nix run .#install-rclone-config [path-to-rclone.conf]`.
-          install-rclone-config = pkgs.writeShellScriptBin "install-rclone-config" ''
+          # Store your rclone config in the project dir (./rclone.conf, gitignored
+          # -- it holds secrets). ingest/uploader auto-use it when run from here.
+          # `nix run .#store-rclone-config [path-to-rclone.conf]`.
+          store-rclone-config = pkgs.writeShellScriptBin "store-rclone-config" ''
             set -eu
             src="''${1:-$(${pkgs.rclone}/bin/rclone config file | tail -1)}"
             if [ ! -f "$src" ]; then
               echo "no rclone config at '$src' -- run 'rclone config' first, or pass the path" >&2
               exit 1
             fi
-            echo "Installing $src -> /etc/rclone.conf (root-only 600; uses sudo)"
-            sudo install -Dm600 "$src" /etc/rclone.conf
-            echo "Done -- the uploader service reads it via RCLONE_CONFIG=/etc/rclone.conf."
+            install -m600 "$src" ./rclone.conf
+            echo "Stored -> $PWD/rclone.conf (gitignored). ingest/uploader use it from this dir."
           '';
         in
         {
@@ -146,7 +154,7 @@
           ingest = { type = "app"; program = "${ingest}/bin/ingest"; };
           uploader = { type = "app"; program = "${uploader}/bin/uploader"; };
           install-service = { type = "app"; program = "${install-service}/bin/install-service"; };
-          install-rclone-config = { type = "app"; program = "${install-rclone-config}/bin/install-rclone-config"; };
+          store-rclone-config = { type = "app"; program = "${store-rclone-config}/bin/store-rclone-config"; };
           sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
           default = self.apps.${system}.sim;
         });
