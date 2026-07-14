@@ -97,7 +97,6 @@ class CardJob:
         self.verified_bytes = 0
         self.uploaded_bytes = 0               # filled from metadata.json (uploader)
         self.dest = _dated_dir(cfg["dest"]["base"], card.uuid)
-        self._files = []                      # (relpath, size)
         self._src_meta = {}                   # relpath -> (size, mtime_ns) at scan
         self.wiped = False
 
@@ -120,7 +119,7 @@ class CardJob:
             write_metadata(self.dest, {   # the receipt; never rewritten
                 "uuid": self.card.uuid, "label": self.card.label,
                 "ingest_date": os.path.basename(self.dest), "algo": self.algo,
-                "files": len(self._files), "total_bytes": self.total_bytes,
+                "files": len(self._src_meta), "total_bytes": self.total_bytes,
                 "verified_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             })
             self.state = PENDING              # wait for a human's confirm
@@ -144,10 +143,8 @@ class CardJob:
                     continue
                 rel = os.path.relpath(p, src)
                 st = os.stat(p)
-                self._files.append((rel, st.st_size))
                 self._src_meta[rel] = (st.st_size, st.st_mtime_ns)
-        self._files.sort()
-        self.total_bytes = sum(sz for _, sz in self._files)
+        self.total_bytes = sum(sz for sz, _ in self._src_meta.values())
 
     # ---- rclone-backed copy + verify --------------------------------------
 
@@ -237,7 +234,7 @@ class CardJob:
         source is unchanged since scan (size + mtime -- the card is read-only, so
         a change means don't touch it). Dry run unless config + env armed it."""
         mode = "WIPE" if self.wipe_armed else "DRY-RUN wipe (kept)"
-        for rel, _sz in self._files:
+        for rel in sorted(self._src_meta):
             if self.abort:                    # card pulled mid-wipe: stop
                 self.fail("REMOVED")
                 return
