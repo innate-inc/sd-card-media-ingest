@@ -91,6 +91,22 @@ journalctl -fu ingest                      # watch it work
 #    (it logs "wipe ARMED" loudly at startup).
 ```
 
+### Updating to a newer version
+
+The systemd units have the nix store path of the built binary **baked in**, so a
+`git pull` alone does not update the running services — you must re-run
+`install-service` to rebuild and repoint the units, then restart:
+
+```bash
+cd ~/sd-card-media-ingest
+git pull
+nix run .#install-service        # rebuilds + rewrites the unit ExecStart
+sudo systemctl restart ingest uploader
+journalctl -fu ingest            # confirm the new version is running
+```
+
+(Re-flash the display too, if the firmware changed: `nix run .#flash`.)
+
 ## Wipe safety
 
 Deletion never happens automatically. A card is wiped only after every file is
