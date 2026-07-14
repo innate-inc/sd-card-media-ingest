@@ -131,6 +131,23 @@ dir, and `nix run .#install-service` bakes that dir into the uploader unit as
 `WorkingDirectory` + `RCLONE_CONFIG` — so no `/etc`, no root config. Keep the
 repo at a stable path, since the units point at it.
 
+## Browse the backups in a browser
+
+`rclone serve http` gives a **read-only** web listing of any remote or path —
+browse and download, no delete. To see **local + cloud in one view**, make a
+`combine` remote that merges the local dest with the bucket, then serve it:
+
+```bash
+nix run .#rclone -- config create both combine \
+    upstreams "local=/media/.../ingest remote=b2:my-bucket/ingest"
+nix run .#rclone -- serve http both: --addr :8080     # http://<box>:8080
+```
+
+Add `--user U --pass P` for basic auth; bind to your LAN, not the public
+internet. For an admin (read-write) UI instead — transfers, deletes — use the
+rclone Web GUI: `nix run .#rclone -- rcd --rc-web-gui` (fetches the GUI bundle
+once, needs internet).
+
 ## Board doesn't show up
 
 The tools find the board by its USB id (`2e8a`). If `nix run .#flash` says "no
