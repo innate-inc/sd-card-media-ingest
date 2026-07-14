@@ -64,12 +64,20 @@ cmake -S device -B build -DLVGL_DIR=... && cmake --build build   # build fw by h
 # 1. One-time cloud remote for the uploader (skip if you only back up locally):
 nix run .#rclone -- config                # make a remote "b2" -> ./rclone.conf
 
-# 2. Edit ./ingest.toml — the three things you must set:
-#      [dest]   base    = "/media/.../ingest/"   # where copies land
-#      [remote] base    = "b2:my-bucket/ingest"  # rclone dest ("" = local only)
-#      [hub]    path_prefix = "..."              # ls /dev/disk/by-path | grep usb
+# 2. Edit ./ingest.toml — the things you must set:
+#      [dest]   base = "/media/.../ingest/"   # where copies land
+#      [remote] base = "b2:my-bucket/ingest"  # rclone dest ("" = local only)
+#      [hub]    vid/pid = the USB hub your readers plug into (`lsusb`; default
+#               is the Terminus 1a40:0101). Every drive on that hub is a source.
 #    Leave [wipe] enabled = false until you trust it (dry-run logging).
 $EDITOR ingest.toml
+
+# Check discovery: plug cards/drives in and see how ports map to slot numbers.
+nix run .#slots        # read-only; never copies. e.g.:
+#   slot port     dev   size       card
+#   1    2.1.1    sdd   -          (empty)
+#   5    2.2      sdb   256.0 GB   EXTREME
+#   ...
 
 # 3. Flash the display firmware, install + start the services:
 nix build .#firmware-ui && nix run .#flash
