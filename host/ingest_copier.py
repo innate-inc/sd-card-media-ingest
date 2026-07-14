@@ -31,26 +31,44 @@ import time
 def manifest_name(algo):
     return algo.upper() + "SUMS"
 
-# Per-ingest state file: written by the copier when an ingest verifies, then
-# updated by the uploader when it's pushed. Its `state` is the source of truth
-# ("verified" -> "uploaded") and `uploaded_bytes` drives the display's green.
+# Two single-writer state files per ingest dir, so no file is co-owned:
+#   metadata.json  -- the copier's immutable receipt (present == verified)
+#   uploaded.json  -- the uploader's state  (present == uploaded)
+# "ready to upload" = has metadata.json, no uploaded.json.
 METADATA = "metadata.json"
+UPLOADED = "uploaded.json"
 
 
-def read_metadata(d):
+def _read_json(d, name):
     try:
-        with open(os.path.join(d, METADATA)) as fh:
+        with open(os.path.join(d, name)) as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return {}
 
 
-def write_metadata(d, meta):
-    tmp = os.path.join(d, METADATA + ".tmp")
+def _write_json(d, name, obj):
+    tmp = os.path.join(d, name + ".tmp")
     with open(tmp, "w") as fh:
-        json.dump(meta, fh, indent=1)
+        json.dump(obj, fh, indent=1)
         fh.write("\n")
-    os.replace(tmp, os.path.join(d, METADATA))   # atomic; readers never tear
+    os.replace(tmp, os.path.join(d, name))       # atomic; readers never tear
+
+
+def read_metadata(d):
+    return _read_json(d, METADATA)
+
+
+def read_uploaded(d):
+    return _read_json(d, UPLOADED)
+
+
+def write_metadata(d, meta):
+    _write_json(d, METADATA, meta)
+
+
+def write_uploaded(d, meta):
+    _write_json(d, UPLOADED, meta)
 
 # Job states (superset of the protocol's status values).
 IDLE, COPYING, VERIFYING, PENDING, WIPING, EMPTY, ERROR = (
@@ -99,12 +117,11 @@ class CardJob:
             self.verify()
             self.write_manifest()
             self.verified_bytes = self.total_bytes
-            write_metadata(self.dest, {
+            write_metadata(self.dest, {   # the receipt; never rewritten
                 "uuid": self.card.uuid, "label": self.card.label,
                 "ingest_date": os.path.basename(self.dest), "algo": self.algo,
                 "files": len(self._files), "total_bytes": self.total_bytes,
                 "verified_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "state": "verified", "uploaded_bytes": 0,
             })
             self.state = PENDING              # wait for a human's confirm
         except Abort:

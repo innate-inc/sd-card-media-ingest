@@ -27,27 +27,48 @@ verified → uploaded**. See `ARCHITECTURE.md` for the full split + protocol and
 
 ## Quick start (Nix)
 
-Requires Nix with flakes enabled (`experimental-features = nix-command flakes`),
-and `rclone` (provided by the flake apps).
+Requires Nix with flakes enabled (`experimental-features = nix-command flakes`).
+rclone/pyserial/etc. come with the flake apps — nothing else to install.
+
+### Quickstart: test / develop (no hardware)
 
 ```bash
-# Watch the whole ingest lifecycle with no hardware: the real daemon drives the
-# simulator with fake cards (copy -> verify -> pending -> wipe).
+# Watch the whole lifecycle in the simulator: the real daemon drives the sim
+# with fake cards (copy -> verify -> pending -> wipe). SPACE = BOOTSEL button
+# (hold = long press), ESC quits.
 nix run .#ingest -- --dry-run | nix run .#sim
 
-# The real thing:
-nix run .#ingest   -- --config /etc/ingest.toml   # discover, copy+verify, wipe
-nix run .#uploader -- --config /etc/ingest.toml   # push verified dirs to cloud
+# ...and auto-confirm the wipe so it runs hands-free:
+nix run .#ingest -- --dry-run --auto-confirm 2 | nix run .#sim
 
-# Build + flash the on-device display firmware (-> ./result/firmware.uf2).
-nix build .#firmware-ui && nix run .#flash
-
-# Install both as systemd services (bakes paths, drops /etc/ingest.toml).
-nix run .#install-service
+nix flake check          # run the test suite (proto, copier+uploader, renders)
 ```
 
-In the simulator, **SPACE** stands in for the board's BOOTSEL button (hold past
-600 ms = long press); **ESC** quits.
+### Quickstart: install / setup / config (on the box)
+
+```bash
+# 1. One-time cloud remote for the uploader (skip if you only back up locally):
+nix run nixpkgs#rclone -- config          # make a remote, e.g. name it "b2"
+
+# 2. Install the systemd services + a starter /etc/ingest.toml:
+nix run .#install-service
+
+# 3. Edit /etc/ingest.toml — the three things you must set:
+#      [dest]   base    = "/media/.../ingest/"   # where copies land
+#      [remote] base    = "b2:my-bucket/ingest"  # rclone dest ("" = local only)
+#      [hub]    path_prefix = "..."              # ls /dev/disk/by-path | grep usb
+#    Leave [wipe] enabled = false until you trust it (dry-run logging).
+sudoedit /etc/ingest.toml
+
+# 4. Flash the display firmware and start everything:
+nix build .#firmware-ui && nix run .#flash
+sudo systemctl enable --now ingest uploader
+
+# 5. When ready to REALLY delete cards after backup, arm the wipe:
+#    set [wipe] enabled = true in /etc/ingest.toml, then add to ingest.service:
+#      Environment=INGEST_ENABLE_WIPE=1
+#    (systemctl edit ingest), and: sudo systemctl restart ingest
+```
 
 ## Wipe safety
 
@@ -64,9 +85,10 @@ The uploader pushes each verified `dest_base/<uuid>/<date>/` to `[remote] base`
 (an rclone destination like `b2:bucket/ingest`, `gdrive:ingest`, or a second
 disk), then runs `rclone check` against the remote — which reads the backend's
 stored **SHA1** from object metadata, so it confirms the bytes are really up
-there **without downloading**. Proof is recorded in `REMOTE_SHA1SUMS` and the
-dir's `metadata.json` flips to `uploaded`. The remote + credentials come from
-rclone's own config (`rclone config`).
+there **without downloading**. Proof is recorded in `REMOTE_SHA1SUMS`, and an
+`uploaded.json` in the dir marks it done (the copier owns `metadata.json`, the
+uploader owns `uploaded.json` — one writer each). The remote + credentials come
+from rclone's own config (`rclone config`).
 
 ## Board doesn't show up
 

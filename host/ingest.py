@@ -26,7 +26,7 @@ import threading
 import time
 
 from ingest_config import as_bool, load_config
-from ingest_copier import (CardJob, COPYING, IDLE, PENDING, read_metadata,
+from ingest_copier import (CardJob, COPYING, IDLE, PENDING, read_uploaded,
                            VERIFYING, WIPING)
 from ingest_discovery import HubDiscovery, MockDiscovery, UNKNOWN
 from ingest_emit import Emitter
@@ -148,10 +148,10 @@ def main():
         if args.dry_run and args.auto_confirm:
             _auto_confirm(jobs, pending_since, args.auto_confirm)
 
-        # Reflect upload progress (the separate uploader writes it to metadata).
+        # Reflect upload progress (the separate uploader writes uploaded.json).
         for job in jobs.values():
             if job.state == PENDING:
-                job.uploaded_bytes = read_metadata(job.dest).get("uploaded_bytes", 0)
+                job.uploaded_bytes = read_uploaded(job.dest).get("uploaded_bytes", 0)
 
         # One display frame. Absent slots keep their column (slot count is fixed).
         emitter.tick([jobs.get(i) for i in range(len(slots))])

@@ -223,7 +223,7 @@ class UploaderTest(unittest.TestCase):
     def test_upload_verifies_against_remote_and_marks_done(self):
         import subprocess
         import uploader
-        from ingest_copier import manifest_name, read_metadata, write_metadata
+        from ingest_copier import (manifest_name, read_uploaded, write_metadata)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         base = os.path.join(tmp.name, "dest")
@@ -236,8 +236,7 @@ class UploaderTest(unittest.TestCase):
             subprocess.run(["rclone", "sha1sum", d], stdout=fo,
                            stderr=subprocess.DEVNULL, check=True)
         os.replace(sums, os.path.join(d, manifest_name("sha1")))
-        write_metadata(d, {"state": "verified", "total_bytes": 2002,
-                           "uploaded_bytes": 0})
+        write_metadata(d, {"total_bytes": 2002, "files": 2})   # copier's receipt
         os.makedirs(os.path.join(base, "UUID-02", "d"))  # no metadata -> ignored
 
         self.assertEqual(list(uploader.ready_dirs(base)), [d])
@@ -245,9 +244,7 @@ class UploaderTest(unittest.TestCase):
 
         rd = os.path.join(remote, "UUID-01", "2026-07-14_00-00-00")
         self.assertTrue(os.path.exists(os.path.join(rd, "note.txt")))
-        meta = read_metadata(d)
-        self.assertEqual(meta["state"], "uploaded")
-        self.assertEqual(meta["uploaded_bytes"], 2002)
+        self.assertEqual(read_uploaded(d).get("uploaded_bytes"), 2002)
         # the proof: remote's own hashes match what we ingested
         loc = {l.split()[1]: l.split()[0]
                for l in open(os.path.join(d, "SHA1SUMS"))}

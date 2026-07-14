@@ -218,9 +218,12 @@ removed — see item 55.)
       verified dirs to `[remote] base` via rclone, verifies against the remote's
       metadata hashes (no download), records `REMOTE_SHA1SUMS` proof. Decoupled
       from the daemon so a wiped card's copy still uploads.
-    - **`metadata.json`** per ingest dir replaced the `.uploaded` marker: the
-      copier writes `state: verified`, the uploader flips it to `uploaded`
-      (+ `uploaded_bytes`), the daemon reads it to fill the display's green.
+    - **Two single-writer JSON files** per ingest dir replaced the `.uploaded`
+      marker (so no file is co-owned): the copier writes an immutable
+      `metadata.json` receipt (present == verified); the uploader writes
+      `uploaded.json` (present == uploaded, + `uploaded_bytes`); the daemon reads
+      `uploaded.json` to fill the display's green. "Ready to upload" = has
+      metadata.json, no uploaded.json.
     - **Display = 4 colourblind-safe stages** (Okabe-Ito): uncopied (orange) →
       copied (yellow) → verified (blue) → uploaded (green).
     - **Wipe arming** moved from `--enable-wipe` CLI to env `INGEST_ENABLE_WIPE=1`

@@ -11,14 +11,15 @@ marker), and for each:
     rclone check <dir> <remote-base>/... --one-way    # verify against the
                                                       # remote's own hashes
     rclone sha1sum <remote-base>/... > <dir>/REMOTE_<ALGO>SUMS   # proof
-    metadata.json: state -> "uploaded" (+ uploaded_at, remote, uploaded_bytes)
+    write <dir>/uploaded.json  (uploaded_at, remote, uploaded_bytes, proof)
 
 The proof is the crux: `rclone check`/`sha1sum` read the hash the backend stores
 in object metadata (Google Drive, Backblaze B2, and S3 all serve SHA1/MD5
 server-side), so we verify the bytes are really up there **without downloading
 them**. The REMOTE_<ALGO>SUMS file is a durable record of what the remote holds;
-flipping metadata.json's `state` to "uploaded" is what marks a card safely off
-site (a local-space reaper, or the display's green segment, reads it).
+writing uploaded.json (single writer -- the copier owns metadata.json, we own
+this) marks a card safely off site (a local-space reaper, or the display's green
+segment, reads it).
 
 Runs once (--once) or loops; drive it from a systemd service/timer. rclone's
 remote + credentials come from rclone's own config (`rclone config`); this only
@@ -32,17 +33,18 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ingest_config import load_config
-from ingest_copier import manifest_name, read_metadata, write_metadata
+from ingest_copier import (manifest_name, read_metadata, read_uploaded,
+                           write_uploaded)
 
 
 def ready_dirs(base):
-    """Yield dest_base/<uuid>/<date>/ dirs verified but not yet uploaded (per
-    each dir's metadata.json, written by the ingest daemon)."""
+    """Yield dest_base/<uuid>/<date>/ dirs that are verified (have the copier's
+    metadata.json) but not yet uploaded (no uploaded.json)."""
     for uuid in sorted(_listdir(base)):
         ud = os.path.join(base, uuid)
         for date in sorted(_listdir(ud)):
             d = os.path.join(ud, date)
-            if read_metadata(d).get("state") == "verified":
+            if read_metadata(d) and not read_uploaded(d):
                 yield d
 
 
@@ -73,11 +75,12 @@ def upload_dir(d, base, remote_base, algo):
             os.remove(proof + ".tmp")
             return False
     os.replace(proof + ".tmp", proof)         # what the remote actually holds
-    meta = read_metadata(d)
-    meta.update(state="uploaded", remote=target,
-                uploaded_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                uploaded_bytes=meta.get("total_bytes", 0))
-    write_metadata(d, meta)                   # the .uploaded marker, now stateful
+    write_uploaded(d, {                        # single-writer; presence == done
+        "uploaded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "remote": target,
+        "uploaded_bytes": read_metadata(d).get("total_bytes", 0),
+        "proof": "REMOTE_" + manifest_name(algo),
+    })
     return True
 
 
