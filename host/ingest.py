@@ -193,9 +193,10 @@ def main():
         if args.dry_run and args.auto_confirm:
             _auto_confirm(jobs, pending_since, args.auto_confirm)
 
-        # Reflect upload progress (the separate uploader streams it live).
+        # Reflect upload progress (the uploader streams it live -- even mid-copy,
+        # so the green segment grows while the card is still being copied).
         for job in jobs.values():
-            if job.state == PENDING:
+            if job.state in (COPYING, VERIFYING, PENDING):
                 job.uploaded_bytes = upload_progress(job.dest)
 
         # A really-wiped card is done: unmount it (once) so it's flushed and
