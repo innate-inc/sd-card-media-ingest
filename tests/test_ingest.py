@@ -57,8 +57,8 @@ class JobTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def job(self, **kw):
-        card = Card("mock-0", "TESTCARD", "UUID-01", self.src, 20000)
+    def job(self, src=None, **kw):
+        card = Card("mock-0", "TESTCARD", "UUID-01", src or self.src, 20000)
         return CardJob(card, self.cfg, **kw)
 
     def test_full_pipeline_to_pending(self):
@@ -145,6 +145,28 @@ class JobTest(unittest.TestCase):
         for rel in self.files:
             self.assertFalse(os.path.exists(os.path.join(self.src, rel)))
         self.assertTrue(os.path.exists(extra), "unscanned file must survive")
+
+    def test_no_data_card_is_clean_wipeable(self):
+        # a card with no data -- only folders and/or 0-byte files -- is offered
+        # as wipeable (to clean it), not stuck as a non-wipeable EMPTY card.
+        src = os.path.join(self.tmp.name, "cleanme")
+        os.makedirs(os.path.join(src, "DCIM", "100"))       # empty folders
+        open(os.path.join(src, ".marker"), "wb").close()    # a 0-byte file
+        j = self.job(src=src, wipe_armed=True)
+        j.run()
+        self.assertEqual(j.state, PENDING)                  # offered for cleaning
+        self.assertTrue(j.request_wipe())
+        self._await_state(j, EMPTY)
+        self.assertFalse(os.path.exists(os.path.join(src, "DCIM")))
+        self.assertFalse(os.path.exists(os.path.join(src, ".marker")))
+        self.assertTrue(os.path.isdir(src))                 # mount root remains
+
+    def test_truly_bare_card_is_empty_not_wipeable(self):
+        src = os.path.join(self.tmp.name, "bare")
+        os.makedirs(src)                                    # nothing at all
+        j = self.job(src=src)
+        j.run()
+        self.assertEqual(j.state, EMPTY)
 
     def test_armed_wipe_removes_emptied_dirs(self):
         j = self.job(wipe_armed=True)

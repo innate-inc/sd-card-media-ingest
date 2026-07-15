@@ -116,8 +116,16 @@ class CardJob:
             log.info("%s: scanned %d files, %s", lbl, len(self._src_meta),
                      human_bytes(self.total_bytes))
             if self.total_bytes == 0:
-                self.state = EMPTY            # nothing on the card
-                log.info("%s: empty card", lbl)
+                # No data to back up. If the card still carries something to
+                # remove -- 0-byte files, or leftover folders (a camera's DCIM /
+                # macOS .Trashes) -- offer a confirm-wipe to clean it; a truly
+                # bare card is just EMPTY.
+                if self._src_meta or self._has_dirs():
+                    self.state = PENDING
+                    log.info("%s: no data (0 bytes) -- ready to clean-wipe", lbl)
+                else:
+                    self.state = EMPTY
+                    log.info("%s: empty card", lbl)
                 return
             self.state = COPYING
             log.info("%s: copying %s -> %s", lbl,
@@ -147,6 +155,15 @@ class CardJob:
         self.state, self.error = ERROR, why   # keep the card; never delete
         (log.info if why == "REMOVED" else log.error)(
             "%s: %s", self.card.label, why)
+
+    def _has_dirs(self):
+        """Any real (non-symlink) subdirectory on the card -- something a
+        clean-wipe could remove, even when there are no files."""
+        try:
+            return any(e.is_dir(follow_symlinks=False)
+                       for e in os.scandir(self.card.mountpoint))
+        except OSError:
+            return False
 
     def scan(self):
         """List the card's files (for the wipe + progress); record size+mtime."""
