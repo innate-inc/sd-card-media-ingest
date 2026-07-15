@@ -34,22 +34,25 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ingest_config import config_paths, human_bytes, load_config, setup_logging
-from ingest_copier import (_stats_bytes, clear_uploading, manifest_name,
-                           read_metadata, read_uploaded, write_uploaded,
-                           write_uploading)
+from ingest_copier import (_stats_bytes, clear_uploading, is_copying,
+                           manifest_name, read_metadata, read_uploaded,
+                           write_uploaded, write_uploading)
 
 log = logging.getLogger("uploader")
 
 
 
 def ready_dirs(base):
-    """Yield dest_base/<label-uuid>/<date>/ dirs that are verified (have the
-    copier's metadata.json) but not yet uploaded (no uploaded.json)."""
+    """Yield dest_base/<label-uuid>/<date>/ dirs to push: verified (metadata.json)
+    OR still being written by the copier (a "<dir>.copying" marker), as long as
+    they aren't already finished (no uploaded.json)."""
     for card in sorted(_listdir(base)):
         cd = os.path.join(base, card)
         for date in sorted(_listdir(cd)):
             d = os.path.join(cd, date)
-            if read_metadata(d) and not read_uploaded(d):
+            if read_uploaded(d):
+                continue
+            if read_metadata(d) or is_copying(d):
                 yield d
 
 
@@ -66,9 +69,10 @@ def _rclone(args, stdout=subprocess.DEVNULL):
 
 
 def _rclone_copy(d, target, on_bytes):
-    """rclone copy, streaming --stats so we can report live uploaded bytes."""
+    """rclone copy, streaming --stats so we can report live uploaded bytes.
+    Excludes the copier's in-flight *.partial temps -- only whole files go up."""
     p = subprocess.Popen(
-        ["rclone", "copy", d, target,
+        ["rclone", "copy", d, target, "--exclude", "*.partial",
          "--use-json-log", "--stats", "1s", "--stats-log-level", "NOTICE"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     for line in p.stderr:
@@ -79,18 +83,21 @@ def _rclone_copy(d, target, on_bytes):
 
 
 def upload_dir(d, base, remote_base, algo):
-    """Copy -> verify against the remote's metadata hashes -> record proof ->
-    write uploaded.json. Returns True only if the remote provably holds the
-    files."""
+    """Push the fully-copied files to the remote (streaming, so the display's
+    "uploaded" segment fills live). While the copier is still writing the dir
+    this just mirrors what's complete; once it's verified (metadata.json), it
+    also checks against the remote's hashes, records proof, and writes
+    uploaded.json. Returns True only when that finalisation succeeds."""
     rel = os.path.relpath(d, base)
     target = remote_base.rstrip("/") + "/" + rel
-    nbytes = read_metadata(d).get("total_bytes", 0)
-    log.info("%s: uploading %s -> %s", rel, human_bytes(nbytes), target)
-    # stream the copy so the display's "uploaded" segment fills live
+    meta = read_metadata(d)                    # present => copy+verify finished
     if _rclone_copy(d, target, lambda b: write_uploading(d, b)) != 0:
         clear_uploading(d)
         log.error("%s: rclone copy failed", rel)
         return False
+    if not meta:
+        return False                           # still copying; pushed what's ready
+    nbytes = meta.get("total_bytes", 0)
     if _rclone(["check", d, target, "--one-way"]) != 0:
         clear_uploading(d)
         log.error("%s: rclone check failed -- remote does not match, not marking",
@@ -135,21 +142,19 @@ def main():
         return
     log.info("uploader: %s -> %s (every %gs)", base, remote_base, args.interval)
 
-    heartbeat_every = max(1, round(600 / max(args.interval, 1)))   # ~10 min idle
-    idle = 0
+    heartbeat_every = max(1, round(600 / max(args.interval, 1)))    # ~10 min
+    tick = 0
     while True:
         ready = list(ready_dirs(base))
-        if ready:
-            done = 0
-            for d in ready:
-                if upload_dir(d, base, remote_base, algo):
-                    done += 1
-            log.info("uploaded %d/%d ready dir(s)", done, len(ready))
-            idle = 0
-        else:
-            if idle % heartbeat_every == 0:      # first idle pass, then ~10-minly
-                log.info("nothing to upload; watching %s", base)
-            idle += 1
+        done = 0
+        for d in ready:
+            if upload_dir(d, base, remote_base, algo):   # logs per dir on finalise
+                done += 1
+        if tick % heartbeat_every == 0:          # periodic liveness, reflecting state
+            n = len(ready) - done                # dirs pushed but not yet verified/final
+            log.info("watching %s -- %s", base,
+                     ("%d dir(s) in flight" % n) if n else "nothing to upload")
+        tick += 1
         if args.once:
             return
         time.sleep(args.interval)

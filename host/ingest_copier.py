@@ -94,6 +94,27 @@ def clear_uploading(dest):
             pass
 
 
+def mark_copying(dest):
+    """Marker (a "<dir>.copying" sibling) telling the uploader this dir is being
+    written right now, so it can push the already-completed files before the
+    whole copy+verify finishes. Removed when the copier is done with it."""
+    try:
+        open(dest + ".copying", "w").close()
+    except OSError:
+        pass
+
+
+def clear_copying(dest):
+    try:
+        os.remove(dest + ".copying")
+    except OSError:
+        pass
+
+
+def is_copying(dest):
+    return os.path.exists(dest + ".copying")
+
+
 def upload_progress(dest):
     """Bytes uploaded so far: the final total once done (uploaded.json), else the
     live count the uploader streams during the copy (0 if neither exists)."""
@@ -158,6 +179,7 @@ class CardJob:
                     self.state = EMPTY
                     log.info("%s: empty card", lbl)
                 return
+            mark_copying(self.dest)       # let the uploader push completed files now
             self.state = COPYING
             log.info("%s: copying %s -> %s", lbl,
                      human_bytes(self.total_bytes), self.dest)
@@ -181,6 +203,8 @@ class CardJob:
         except Exception:                    # never let the worker die silently
             self.state, self.error = ERROR, "ERROR"
             log.exception("%s: worker error", lbl)
+        finally:
+            clear_copying(self.dest)         # copy phase over (done / error / abort)
 
     def fail(self, why):
         self.state, self.error = ERROR, why   # keep the card; never delete

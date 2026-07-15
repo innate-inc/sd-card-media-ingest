@@ -325,6 +325,36 @@ class UploaderTest(unittest.TestCase):
         # uploaded -> not offered again
         self.assertEqual(list(uploader.ready_dirs(base)), [])
 
+    def test_uploads_in_progress_dir_before_finalizing(self):
+        import uploader
+        from ingest_copier import (clear_copying, mark_copying, read_uploaded,
+                                    write_metadata)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = os.path.join(tmp.name, "dest")
+        remote = os.path.join(tmp.name, "remote")
+        d = os.path.join(base, "UUID-9", "2026-01-01_00-00-00")
+        make_card(d, {"a.mp4": b"x" * 1000, "b.mp4.partial": b"half"})
+        mark_copying(d)                            # copier still writing this dir
+
+        # still copying: offered, completed files go up (partials excluded), but
+        # NOT finalised (no metadata -> no uploaded.json).
+        self.assertIn(d, list(uploader.ready_dirs(base)))
+        self.assertFalse(uploader.upload_dir(d, base, remote, "sha1"))
+        rd = os.path.join(remote, "UUID-9", "2026-01-01_00-00-00")
+        self.assertTrue(os.path.exists(os.path.join(rd, "a.mp4")))
+        self.assertFalse(os.path.exists(os.path.join(rd, "b.mp4.partial")))
+        self.assertFalse(read_uploaded(d))
+
+        # copier finishes: partial renamed, marker cleared, metadata written.
+        os.remove(os.path.join(d, "b.mp4.partial"))
+        make_card(d, {"b.mp4": b"y" * 500})
+        clear_copying(d)
+        write_metadata(d, {"total_bytes": 1500, "files": 2})
+        self.assertTrue(uploader.upload_dir(d, base, remote, "sha1"))
+        self.assertEqual(read_uploaded(d).get("uploaded_bytes"), 1500)
+        self.assertTrue(os.path.exists(os.path.join(rd, "b.mp4")))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
