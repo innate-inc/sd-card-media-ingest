@@ -146,18 +146,21 @@ def main():
         return
     log.info("uploader: %s -> %s (every %gs)", base, remote_base, args.interval)
 
-    heartbeat_every = max(1, round(600 / max(args.interval, 1)))    # ~10 min
+    active_every = max(1, round(30 / max(args.interval, 1)))        # ~30s while working
+    heartbeat_every = max(1, round(600 / max(args.interval, 1)))    # ~10 min idle
     tick = 0
     while True:
         ready = list(ready_dirs(base))
-        done = 0
         for d in ready:
-            if upload_dir(d, base, remote_base, algo):   # logs per dir on finalise
-                done += 1
-        if tick % heartbeat_every == 0:          # periodic liveness, reflecting state
-            n = len(ready) - done                # dirs pushed but not yet verified/final
-            log.info("watching %s -- %s", base,
-                     ("%d dir(s) in flight" % n) if n else "nothing to upload")
+            upload_dir(d, base, remote_base, algo)       # logs per dir on finalise
+        inflight = [d for d in ready if not read_uploaded(d)]   # still streaming
+        if inflight:
+            if tick % active_every == 0:                 # show it's making progress
+                up = sum(upload_progress(d) for d in inflight)
+                log.info("uploading: %d dir(s) in flight, %s up so far",
+                         len(inflight), human_bytes(up))
+        elif tick % heartbeat_every == 0:
+            log.info("watching %s -- nothing to upload", base)
         tick += 1
         if args.once:
             return
