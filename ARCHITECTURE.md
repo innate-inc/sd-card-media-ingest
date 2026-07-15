@@ -23,11 +23,14 @@ the risky copy/verify/upload is delegated to **rclone**.
 ```
 
 The ingest daemon and the uploader are **decoupled**: the daemon copies +
-verifies to local disk and wipes on confirm; the separate uploader pushes those
-verified dirs to the cloud on its own schedule (a card can be wiped and gone
-while its local copy is still uploading). They coordinate through two per-dir
-files, one writer each: `metadata.json` (the copier's receipt) and
-`uploaded.json` (the uploader's state).
+verifies to local disk and wipes on confirm; the separate uploader pushes to the
+cloud on its own schedule — streaming the already-complete files *during* the
+copy (skipping rclone's `*.partial` temps) and finalising once verified (a card
+can be wiped and gone while its local copy is still uploading). They coordinate
+through small per-dir files: `metadata.json` (the copier's receipt, written when
+verified) and `uploaded.json` (the uploader's done marker), one writer each; a
+`<dir>.copying` marker tells the uploader the copier is still writing, and a
+`<dir>.uploading` sibling carries the live uploaded-byte count for the display.
 
 ## Components
 
@@ -41,7 +44,7 @@ the tree, to be replaced; **planned** = designed, not yet code.
 | **Device firmware (LVGL)** | `device/` | built | Runs the same `app/` UI via LVGL on the RP2350/ST7789 (VERTICAL scan = landscape 320×172, RGB565 byte-swapped in the flush), reading the line protocol over USB-CDC. Reads the **BOOTSEL button** at runtime for on-device navigation and emits `confirm <i>` back to the host. `nix build .#firmware-ui` → uf2; `nix run .#flash`. |
 | **Host ingest daemon** | `host/ingest*.py` | built | Discovers readers in physical order (`/dev/disk/by-path`), auto-mounts each card it finds unmounted (read-write under `/run/ingest/`, unmounted after a real wipe and on removal — a headless box has no desktop mounter; an already-mounted card is left as-is), runs the copier, and emits the line protocol. Split into small modules — `ingest_config`, `ingest_discovery`, `ingest_copier` (**the only file that deletes**), `ingest_emit`, `ingest_link`, thin `ingest.py`. `--dry-run` runs the full lifecycle over fake cards: `nix run .#ingest -- --dry-run \| nix run .#sim`. |
 | **Copier** | `host/ingest_copier.py` | built | Per card: `scan → rclone copy → rclone check → SHA1SUMS receipt + metadata.json → pending → guarded wipe`. rclone owns the whole-dir copy + independent-double-read verify; the wipe stays ours (confirm-gated, dry-run by default, per-file size+mtime guard). |
-| **Uploader** | `host/uploader.py` | built | Separate process (`nix run .#uploader`): pushes verified ingest dirs to the cloud with rclone, then verifies against the remote's own metadata hashes (no download) and writes `uploaded.json`. Decoupled from the daemon. |
+| **Uploader** | `host/uploader.py` | built | Separate process (`nix run .#uploader`): streams each ingest to the cloud with rclone *as it's copied* (completed files only, `*.partial` excluded), then once verified checks against the remote's own metadata hashes (no download) and writes `uploaded.json`. Decoupled from the daemon. |
 | **systemd** | `deploy/` | built | `ingest.service` + `uploader.service`, installed by `nix run .#install-service` (bakes binary paths + the project dir as `WorkingDirectory`, so they read `./ingest.toml` and `./rclone.conf`). |
 | **Tests** | `tests/` | built | `nix flake check`: `proto` (serial lines → asserted model), `ingest-unit` (copier + emitter + uploader over a fake card tree, real rclone), `ingest-render` (real daemon `--dry-run` → real LVGL → non-blank frame), `sim-render` (fixed serial feed → non-blank frame). |
 
@@ -186,5 +189,7 @@ uploader later writes `uploaded.json` (it never touches `metadata.json`).
 
 ### The four display stages
 The bar climbs through **uncopied → copied → verified → uploaded** (orange →
-yellow → blue → green, Okabe-Ito). `uploaded` is driven by the uploader via
-`uploaded.json`, so it fills for a card still present when its upload completes.
+yellow → blue → green, Okabe-Ito). `uploaded` is driven by the uploader's live
+byte count (`<dir>.uploading`, then the final `uploaded.json`), so the green
+segment fills progressively as the upload streams — visible while the card is
+still present.

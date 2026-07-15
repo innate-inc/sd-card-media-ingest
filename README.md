@@ -15,10 +15,11 @@ copy/verify/upload is delegated to **rclone**:
   and per card runs `rclone copy` → `rclone check` into
   `dest_base/<label>-<uuid>/<ingest_date>/`, then waits for a confirm to wipe. It is the
   only thing that deletes, and only on an explicit confirm.
-- **Uploader** (`host/uploader.py`) — a *separate* process that pushes verified
-  ingest dirs to a cloud remote (rclone) and proves it by re-checking against
-  the remote's own hashes. Decoupled, so a card can be wiped and gone while its
-  local copy is still uploading.
+- **Uploader** (`host/uploader.py`) — a *separate* process that streams each
+  ingest to a cloud remote (rclone) as the files are copied, then proves it by
+  re-checking against the remote's own hashes once the ingest is verified.
+  Decoupled, so a card can be wiped and gone while its local copy is still
+  uploading.
 - **Simulator** (`sim/`) — the exact device UI in an SDL window, no hardware.
 
 The bar climbs through four colourblind-safe stages: **uncopied → copied →
@@ -120,14 +121,19 @@ it, and every action is logged (`journalctl -u innate-sd-ingester-ingest`).
 
 ## Cloud upload
 
-The uploader pushes each verified `dest_base/<label>-<uuid>/<date>/` to `[remote] base`
-(an rclone destination like `b2:bucket/ingest`, `gdrive:ingest`, or a second
-disk), then runs `rclone check` against the remote — which reads the backend's
-stored **SHA1** from object metadata, so it confirms the bytes are really up
-there **without downloading**. Proof is recorded in `REMOTE_SHA1SUMS`, and an
-`uploaded.json` in the dir marks it done (the copier owns `metadata.json`, the
-uploader owns `uploaded.json` — one writer each). The remote + credentials come
-from rclone's own config (`rclone config`).
+The uploader pushes each ingest under `dest_base/<label>-<uuid>/<date>/` to
+`[remote] base` (an rclone destination like `b2:bucket/ingest`, `gdrive:ingest`,
+or a second disk). It starts **while the copy is still running** — the copier
+leaves a `<dir>.copying` marker, and each pass the uploader rclone-copies the
+already-complete files (skipping rclone's in-flight `*.partial` temps), so bytes
+stream to the cloud as they land and the display's green segment fills live.
+Once the ingest is verified (`metadata.json`), it runs `rclone check` against
+the remote — which reads the backend's stored **SHA1** from object metadata, so
+it confirms the bytes are really up there **without downloading** — records the
+proof in `REMOTE_SHA1SUMS`, and writes `uploaded.json` to mark it done (the
+copier owns `metadata.json`, the uploader owns `uploaded.json` — one writer
+each; `uploaded.json` present always means a fully verified upload). The remote
++ credentials come from rclone's own config (`rclone config`).
 
 ### Set up Backblaze B2 with rclone
 
