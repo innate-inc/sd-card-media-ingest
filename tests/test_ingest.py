@@ -88,8 +88,11 @@ class JobTest(unittest.TestCase):
         self.assertEqual(rel[0], "UUID-01")                    # base/<uuid>/...
         self.assertRegex(rel[1], r"^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d")  # <date>/
 
-    def test_two_ingests_same_uuid_get_separate_dirs(self):
-        self.assertNotEqual(self.job().dest, self.job().dest)
+    def test_same_card_reuses_its_dir(self):
+        # dest is derived from the card's mount time, so re-running the same
+        # ingest (e.g. after a daemon restart, mount still alive) lands in the
+        # SAME dir -- rclone then skips what's copied instead of duplicating it.
+        self.assertEqual(self.job().dest, self.job().dest)
 
     def test_copy_preserves_mtime(self):
         j = self.job()

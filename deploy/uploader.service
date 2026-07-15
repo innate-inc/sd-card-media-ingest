@@ -9,7 +9,10 @@ Type=simple
 # project dir it's run from, and the nix-built binary). No --config: the working
 # dir lets it load ./ingest.toml then ./config.toml (local overrides).
 WorkingDirectory=@WORKDIR@
-ExecStart=@UPLOADER@ --interval 60
+# short interval so a just-verified card is uploaded while it's still on the
+# display (the green "uploaded" segment appears before the operator wipes it);
+# a pass with nothing ready is just a cheap local dir scan.
+ExecStart=@UPLOADER@ --interval 5
 # rclone remote + credentials, stored in the project dir by .#store-rclone-config:
 Environment=RCLONE_CONFIG=@WORKDIR@/rclone.conf
 Restart=on-failure

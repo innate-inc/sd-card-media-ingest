@@ -346,15 +346,17 @@ def _card_dir(card):
 
 
 def _dated_dir(base, card):
-    """dest_base/<label>-<uuid>/<ingest_date>/ -- a fresh directory per ingest,
-    created atomically so nothing ever collides (two same-UUID cards at once
-    just get adjacent dirs)."""
-    day = os.path.join(base, _card_dir(card), time.strftime("%Y-%m-%d_%H-%M-%S"))
-    d, n = day, 2
-    while True:
-        try:
-            os.makedirs(d)
-            return d
-        except FileExistsError:
-            d = "%s-%d" % (day, n)
-            n += 1
+    """dest_base/<label>-<uuid>/<mount_time>/. The timestamp is the card's mount
+    time (read from the mountpoint), which stays the same while the card is
+    inserted -- even across a daemon restart, since the mount survives in
+    tmpfs. So a restart re-copies into the SAME dir and rclone skips what's
+    already there instead of duplicating the ingest. The dir is reused if it
+    exists; a genuinely new insertion mounts afresh and gets a new timestamp."""
+    try:
+        ts = os.stat(card.mountpoint).st_ctime
+    except OSError:
+        ts = time.time()
+    stamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(ts))
+    day = os.path.join(base, _card_dir(card), stamp)
+    os.makedirs(day, exist_ok=True)
+    return day
