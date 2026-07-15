@@ -75,6 +75,37 @@ def write_metadata(d, meta):
 def write_uploaded(d, meta):
     _write_json(d, UPLOADED, meta)
 
+
+# Live upload progress, written NEXT TO the ingest dir ("<dir>.uploading", not
+# inside it) so it isn't swept into the rclone copy; removed once uploaded.json
+# (the done marker) lands.
+def write_uploading(dest, uploaded_bytes):
+    tmp = dest + ".uploading.tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"uploaded_bytes": uploaded_bytes}, fh)
+    os.replace(tmp, dest + ".uploading")
+
+
+def clear_uploading(dest):
+    for p in (dest + ".uploading", dest + ".uploading.tmp"):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def upload_progress(dest):
+    """Bytes uploaded so far: the final total once done (uploaded.json), else the
+    live count the uploader streams during the copy (0 if neither exists)."""
+    done = read_uploaded(dest)
+    if done:
+        return done.get("uploaded_bytes", 0)
+    try:
+        with open(dest + ".uploading") as fh:
+            return json.load(fh).get("uploaded_bytes", 0)
+    except (OSError, ValueError):
+        return 0
+
 # Job states (superset of the protocol's status values).
 IDLE, COPYING, VERIFYING, PENDING, WIPING, EMPTY, ERROR = (
     "idle", "copying", "verifying", "pending", "wiping", "empty", "error")

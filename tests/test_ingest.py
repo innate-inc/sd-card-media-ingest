@@ -273,6 +273,23 @@ class EmitterTest(unittest.TestCase):
 
 
 class UploaderTest(unittest.TestCase):
+    def test_upload_progress_live_then_done(self):
+        from ingest_copier import (clear_uploading, upload_progress,
+                                    write_uploaded, write_uploading)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = os.path.join(tmp.name, "card", "2026-01-01_00-00-00")
+        os.makedirs(d)
+        self.assertEqual(upload_progress(d), 0)
+        write_uploading(d, 500)
+        self.assertEqual(upload_progress(d), 500)          # live count
+        # the live file is a sibling, NOT inside the dir rclone copies
+        self.assertEqual(os.listdir(d), [])
+        write_uploaded(d, {"uploaded_bytes": 2000})
+        self.assertEqual(upload_progress(d), 2000)         # done wins over live
+        clear_uploading(d)
+        self.assertEqual(upload_progress(d), 2000)
+
     def test_upload_verifies_against_remote_and_marks_done(self):
         import subprocess
         import uploader

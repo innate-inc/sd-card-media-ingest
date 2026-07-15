@@ -34,8 +34,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ingest_config import config_paths, human_bytes, load_config, setup_logging
-from ingest_copier import (manifest_name, read_metadata, read_uploaded,
-                           write_uploaded)
+from ingest_copier import (_stats_bytes, clear_uploading, manifest_name,
+                           read_metadata, read_uploaded, write_uploaded,
+                           write_uploading)
 
 log = logging.getLogger("uploader")
 
@@ -64,6 +65,19 @@ def _rclone(args, stdout=subprocess.DEVNULL):
                           stderr=subprocess.DEVNULL).returncode
 
 
+def _rclone_copy(d, target, on_bytes):
+    """rclone copy, streaming --stats so we can report live uploaded bytes."""
+    p = subprocess.Popen(
+        ["rclone", "copy", d, target,
+         "--use-json-log", "--stats", "1s", "--stats-log-level", "NOTICE"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    for line in p.stderr:
+        b = _stats_bytes(line)
+        if b is not None:
+            on_bytes(b)
+    return p.wait()
+
+
 def upload_dir(d, base, remote_base, algo):
     """Copy -> verify against the remote's metadata hashes -> record proof ->
     write uploaded.json. Returns True only if the remote provably holds the
@@ -72,10 +86,13 @@ def upload_dir(d, base, remote_base, algo):
     target = remote_base.rstrip("/") + "/" + rel
     nbytes = read_metadata(d).get("total_bytes", 0)
     log.info("%s: uploading %s -> %s", rel, human_bytes(nbytes), target)
-    if _rclone(["copy", d, target]) != 0:
+    # stream the copy so the display's "uploaded" segment fills live
+    if _rclone_copy(d, target, lambda b: write_uploading(d, b)) != 0:
+        clear_uploading(d)
         log.error("%s: rclone copy failed", rel)
         return False
     if _rclone(["check", d, target, "--one-way"]) != 0:
+        clear_uploading(d)
         log.error("%s: rclone check failed -- remote does not match, not marking",
                   rel)
         return False
@@ -83,6 +100,7 @@ def upload_dir(d, base, remote_base, algo):
     with open(proof + ".tmp", "w") as fo:
         if _rclone([algo + "sum", target], stdout=fo) != 0:
             os.remove(proof + ".tmp")
+            clear_uploading(d)
             log.error("%s: could not read remote hashes for proof", rel)
             return False
     os.replace(proof + ".tmp", proof)         # what the remote actually holds
@@ -92,6 +110,7 @@ def upload_dir(d, base, remote_base, algo):
         "uploaded_bytes": nbytes,
         "proof": "REMOTE_" + manifest_name(algo),
     })
+    clear_uploading(d)                         # done marker lands; drop live file
     log.info("%s: uploaded & verified against remote (%s)", rel,
              human_bytes(nbytes))
     return True

@@ -28,7 +28,7 @@ import time
 
 from ingest_config import (as_bool, config_paths, human_bytes, load_config,
                            setup_logging)
-from ingest_copier import (CardJob, COPYING, IDLE, PENDING, read_uploaded,
+from ingest_copier import (CardJob, COPYING, IDLE, PENDING, upload_progress,
                            VERIFYING, WIPING)
 from ingest_discovery import HubDiscovery, MockDiscovery, UNKNOWN
 from ingest_emit import Emitter
@@ -193,10 +193,10 @@ def main():
         if args.dry_run and args.auto_confirm:
             _auto_confirm(jobs, pending_since, args.auto_confirm)
 
-        # Reflect upload progress (the separate uploader writes uploaded.json).
+        # Reflect upload progress (the separate uploader streams it live).
         for job in jobs.values():
             if job.state == PENDING:
-                job.uploaded_bytes = read_uploaded(job.dest).get("uploaded_bytes", 0)
+                job.uploaded_bytes = upload_progress(job.dest)
 
         # A really-wiped card is done: unmount it (once) so it's flushed and
         # safe to pull. (A dry-run confirm deleted nothing, so leave it mounted.)
