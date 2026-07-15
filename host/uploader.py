@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ingest_config import config_paths, human_bytes, load_config, setup_logging
 from ingest_copier import (_stats_bytes, clear_uploading, is_copying,
                            manifest_name, read_metadata, read_uploaded,
-                           write_uploaded, write_uploading)
+                           upload_progress, write_uploaded, write_uploading)
 
 log = logging.getLogger("uploader")
 
@@ -91,7 +91,11 @@ def upload_dir(d, base, remote_base, algo):
     rel = os.path.relpath(d, base)
     target = remote_base.rstrip("/") + "/" + rel
     meta = read_metadata(d)                    # present => copy+verify finished
-    if _rclone_copy(d, target, lambda b: write_uploading(d, b)) != 0:
+    # rclone --stats reports bytes for THIS pass only (already-uploaded files are
+    # skipped -> 0), so add them to the running total already up. Monotonic, and
+    # survives an uploader restart (the .uploading file is on the backup disk).
+    base = upload_progress(d)
+    if _rclone_copy(d, target, lambda b: write_uploading(d, base + b)) != 0:
         clear_uploading(d)
         log.error("%s: rclone copy failed", rel)
         return False
