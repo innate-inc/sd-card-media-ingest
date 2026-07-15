@@ -116,9 +116,21 @@ def main():
         return
     log.info("uploader: %s -> %s (every %gs)", base, remote_base, args.interval)
 
+    heartbeat_every = max(1, round(600 / max(args.interval, 1)))   # ~10 min idle
+    idle = 0
     while True:
-        for d in ready_dirs(base):
-            upload_dir(d, base, remote_base, algo)
+        ready = list(ready_dirs(base))
+        if ready:
+            done = 0
+            for d in ready:
+                if upload_dir(d, base, remote_base, algo):
+                    done += 1
+            log.info("uploaded %d/%d ready dir(s)", done, len(ready))
+            idle = 0
+        else:
+            if idle % heartbeat_every == 0:      # first idle pass, then ~10-minly
+                log.info("nothing to upload; watching %s", base)
+            idle += 1
         if args.once:
             return
         time.sleep(args.interval)
