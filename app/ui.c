@@ -168,6 +168,10 @@ static void draw_detail(void) {
     /* snprintf returns the *intended* length; clamp so `sizeof body - o` can
      * never go negative and wrap. */
     #define BODY_CLAMP() do { if (o > (int)sizeof body - 1) o = sizeof body - 1; } while (0)
+    /* status first, so if the body ever overflows it's the least-important
+     * bottom lines that get clipped, never the status. */
+    o += snprintf(body + o, sizeof body - o, "%s\n", status_text(s->status));
+    BODY_CLAMP();
     if (s->detail[0]) {
         o += snprintf(body + o, sizeof body - o, "%s\n", s->detail);
         BODY_CLAMP();
@@ -178,17 +182,16 @@ static void draw_detail(void) {
         o += snprintf(body + o, sizeof body - o, "total %s\n", gb);
         BODY_CLAMP();
     }
-    if (s->kbps >= 0) {
-        char spd[16];
-        fmt_mbps(spd, sizeof spd, s->kbps);
-        o += snprintf(body + o, sizeof body - o, "speed %s\n", spd);
-        BODY_CLAMP();
-    }
-    if (s->eta_s >= 0) {
-        char eta[16];
-        fmt_eta(eta, sizeof eta, s->eta_s);
-        o += snprintf(body + o, sizeof body - o, "eta %s\n", eta);
-        BODY_CLAMP();
+    {   /* speed + eta share one line to save vertical space */
+        char spd[16] = "", eta[16] = "";
+        if (s->kbps >= 0) fmt_mbps(spd, sizeof spd, s->kbps);
+        if (s->eta_s >= 0) fmt_eta(eta, sizeof eta, s->eta_s);
+        if (spd[0] || eta[0]) {
+            o += snprintf(body + o, sizeof body - o, "%s%s%s\n", spd,
+                          (spd[0] && eta[0]) ? "  eta " : (eta[0] ? "eta " : ""),
+                          eta);
+            BODY_CLAMP();
+        }
     }
     int filled = 0;
     for (int k = 0; k < MAX_SEGS && o < (int)sizeof body - 1; k++) {
@@ -209,7 +212,6 @@ static void draw_detail(void) {
         o += snprintf(body + o, sizeof body - o, "free %s\n", gb);
         BODY_CLAMP();
     }
-    snprintf(body + o, sizeof body - o, "%s", status_text(s->status));
     lv_label_set_text(g.det_body, body);
     #undef BODY_CLAMP
 
@@ -569,10 +571,10 @@ static void make_detail(void) {
     lv_obj_set_style_text_font(g.det_title, &lv_font_montserrat_16, 0);
 
     g.det_body = lv_label_create(d);
-    lv_obj_set_pos(g.det_body, 8, 32);
+    lv_obj_set_pos(g.det_body, 8, 30);
     lv_obj_set_width(g.det_body, UI_W * 3 / 4 - 16);
     lv_obj_set_style_text_color(g.det_body, C_TEXT, 0);
-    lv_obj_set_style_text_font(g.det_body, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(g.det_body, &lv_font_montserrat_12, 0);
 
     lv_obj_t *btn = lv_obj_create(d);
     lv_obj_remove_style_all(btn);
