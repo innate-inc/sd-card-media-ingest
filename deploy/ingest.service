@@ -5,13 +5,15 @@ After=local-fs.target
 [Service]
 Type=simple
 # @WORKDIR@ / @INGEST@ are substituted by `nix run .#install-service` (the
-# project dir it's run from, and the nix-built binary).
+# project dir it's run from, and the nix-built binary). No --config: with the
+# working dir set, the daemon loads ./ingest.toml then ./config.toml (local
+# overrides) -- passing --config would use a single file and skip config.toml.
 WorkingDirectory=@WORKDIR@
-ExecStart=@INGEST@ --config @WORKDIR@/ingest.toml
+ExecStart=@INGEST@
 Restart=on-failure
 RestartSec=5
-# SAFETY: real deletion is armed ONLY by [wipe] enabled = true in ingest.toml;
-# otherwise a confirmed wipe just logs what it would delete.
+# SAFETY: real deletion is armed ONLY by [wipe] enabled = true; otherwise a
+# confirmed wipe just logs what it would delete.
 
 [Install]
 WantedBy=multi-user.target
