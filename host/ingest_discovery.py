@@ -51,6 +51,7 @@ class HubDiscovery:
         self.mount = mount                # auto-mount unmounted cards ourselves?
         self._mounts = {}                 # ident -> mountpoint we created
         self._mount_failed = set()        # idents we've already warned we can't mount
+        self._released = {}               # ident -> Card left unmounted after a wipe
         vid = (hub_cfg.get("vid") or "").lower()
         pid = (hub_cfg.get("pid") or "").lower()
         prefix = hub_cfg.get("path_prefix") or ""
@@ -84,8 +85,12 @@ class HubDiscovery:
         if sectors == 0:
             self._cache.pop(ident, None)      # media gone; forget it
             self._unmount(ident)              # drop any mount we made for it
+            self._released.pop(ident, None)
             self._mount_failed.discard(ident)
             return None
+        released = self._released.get(ident)
+        if released is not None:
+            return released                   # wiped: present but left unmounted
         cached = self._cache.get(ident)
         if cached is not None:
             return cached                     # identity is fixed while inserted
@@ -155,6 +160,16 @@ class HubDiscovery:
         self._mount_failed.discard(ident)
         log.info("auto-mounted %s at %s (rw)", part, mp)
         return mp
+
+    def release(self, ident):
+        """After a wipe: unmount the card and stop auto-mounting it, so its
+        filesystem is flushed and it's safe to pull. It still reports 'present'
+        (unmounted) until physically removed, then everything is forgotten."""
+        card = self._cache.pop(ident, None)
+        self._unmount(ident)
+        if card is not None:
+            card.mountpoint = None
+            self._released[ident] = card
 
     def _unmount(self, ident):
         """Unmount (and clean up) a card we auto-mounted; no-op otherwise."""
@@ -295,6 +310,9 @@ class MockDiscovery:
         t = time.monotonic() - self.t0
         return [card if card and ins <= t and (rm is None or t < rm) else None
                 for card, ins, rm in self.cards]
+
+    def release(self, ident):
+        pass                                  # no real mounts in --dry-run
 
 
 def _make_fake_card(root, nfiles, kib, seed):

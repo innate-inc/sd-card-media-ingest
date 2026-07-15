@@ -131,6 +131,7 @@ def main():
     jobs = {}                                  # physical slot index -> CardJob
     used_cols = set()                          # display columns currently taken
     unmounted_warned = set()                   # slots warned about (not mounted)
+    released = set()                           # idents unmounted after their wipe
     interval = cfg["poll"]["interval_ms"] / 1000.0
     pending_since = {}                         # slot -> t (for --auto-confirm)
     tick = 0
@@ -152,6 +153,7 @@ def main():
                 if job.state in (IDLE, COPYING, VERIFYING, WIPING):
                     job.fail("REMOVED")
                 used_cols.discard(job.col)
+                released.discard(job.card.ident)
                 del jobs[i]
                 job = None
             if card is None:
@@ -195,6 +197,16 @@ def main():
         for job in jobs.values():
             if job.state == PENDING:
                 job.uploaded_bytes = read_uploaded(job.dest).get("uploaded_bytes", 0)
+
+        # A really-wiped card is done: unmount it (once) so it's flushed and
+        # safe to pull. (A dry-run confirm deleted nothing, so leave it mounted.)
+        for job in jobs.values():
+            if (job.wiped and job.wipe_armed
+                    and job.card.ident not in released):
+                released.add(job.card.ident)
+                disco.release(job.card.ident)
+                log.info("slot %d: %s wiped -- unmounted, safe to remove",
+                         job.col, job.card.label)
 
         # One display frame: the present cards in column order.
         ncols = max(by_col) + 1 if by_col else 0
