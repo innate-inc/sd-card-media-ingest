@@ -44,7 +44,7 @@ the tree, to be replaced; **planned** = designed, not yet code.
 | **Device firmware (LVGL)** | `device/` | built | Runs the same `app/` UI via LVGL on the RP2350/ST7789 (VERTICAL scan = landscape 320×172, RGB565 byte-swapped in the flush), reading the line protocol over USB-CDC. Reads the **BOOTSEL button** at runtime for on-device navigation and emits `confirm <i>` back to the host. `nix build .#firmware-ui` → uf2; `nix run .#flash`. |
 | **Host ingest daemon** | `host/ingest*.py` | built | Discovers readers in physical order (`/dev/disk/by-path`), auto-mounts each card it finds unmounted (read-write under `/run/ingest/`, unmounted after a real wipe and on removal — a headless box has no desktop mounter; an already-mounted card is left as-is), runs the copier, and emits the line protocol. Split into small modules — `ingest_config`, `ingest_discovery`, `ingest_copier` (**the only file that deletes**), `ingest_emit`, `ingest_link`, thin `ingest.py`. `--dry-run` runs the full lifecycle over fake cards: `nix run .#ingest -- --dry-run \| nix run .#sim`. |
 | **Copier** | `host/ingest_copier.py` | built | Per card: `scan → rclone copy → rclone check → SHA1SUMS receipt + metadata.json → pending → guarded wipe`. rclone owns the whole-dir copy + independent-double-read verify; the wipe stays ours (confirm-gated, dry-run by default, per-file size+mtime guard). |
-| **Uploader** | `host/uploader.py` | built | Separate process (`nix run .#uploader`): streams each ingest to the cloud with rclone *as it's copied* (completed files only, `*.partial` excluded), then once verified checks against the remote's own metadata hashes (no download) and writes `uploaded.json`. Decoupled from the daemon. |
+| **Uploader** | `host/uploader.py` | built | Separate process (`nix run .#uploader`): streams each ingest to the cloud with rclone *as it's copied* (completed files only, `*.partial` excluded), then once verified checks against the remote's own metadata hashes (no download) and writes `uploaded.json`. Decoupled from the daemon. Also mirrors the plain directories listed in `[backup] paths` on a much slower clock (copy + check, nothing written back into them). |
 | **systemd** | `deploy/` | built | `ingest.service` + `uploader.service`, installed by `nix run .#install-service` (bakes binary paths + the project dir as `WorkingDirectory`, so they read `./ingest.toml` and `./rclone.conf`). |
 | **Tests** | `tests/` | built | `nix flake check`: `proto` (serial lines → asserted model), `ingest-unit` (copier + emitter + uploader over a fake card tree, real rclone), `ingest-render` (real daemon `--dry-run` → real LVGL → non-blank frame), `sim-render` (fixed serial feed → non-blank frame). |
 
@@ -177,8 +177,51 @@ The host config decides *everything the device doesn't*:
   `numbers`. Okabe-Ito (colourblind-safe) by default.
 - **Remote**: `[remote] base` — the rclone destination for the uploader (empty
   = no uploading). Credentials live in rclone's own config.
+- **Backup paths**: `[backup] paths` — plain directories mirrored to the
+  same remote beside the card pipeline, on their own `interval`. Nothing
+  is written back into them.
 - **Wipe**: `[wipe] enabled = true` arms real deletion (the daemon logs
   `wipe ARMED` at startup); otherwise a confirm only logs what it would delete.
+
+### Plain-path backups (`[backup]`)
+The uploader runs a second, much slower sweep beside the card pipeline: every
+`[backup] interval` seconds (6h by default) it mirrors each `{src, dst}` entry
+in `[backup] paths` to `<remote base>/<dst>` with `rclone copy`, then verifies
+it with `rclone check --one-way` against the remote's own hashes.
+
+It is deliberately **not** the card path. A card ingest is a state machine with
+a display segment and a wipe interlock behind it, so it earns `uploaded.json`
+and a `REMOTE_SHA1SUMS` proof written *into* the ingest dir. A backup path has
+none of those, and the directories belong to another application (Immich
+indexes its library; the Immich container writes its own DB dumps), so the
+sweep writes **nothing** into `src` — `rclone copy` is idempotent, and the
+remote is the state.
+
+The two halves run on separate clocks. `interval` (default 5 min) drives the
+copy pass, which is a listing diff and costs almost nothing, so new data reaches
+the remote within minutes. `verify_every` (default 24h) drives a full hash
+scrub, because `rclone check` re-reads every byte of `src` -- ~2.6s for an 11G
+library off NVMe, roughly 60s off a spinning disk, and it grows with the
+library. A copy that actually moved bytes is checked immediately regardless, so
+newly-arrived data is never left unverified.
+
+The sweep runs on its **own daemon thread**, never inside the card loop: a
+first full mirror can take hours, and the card sweep is latency-critical
+because the display's green segment gates a destructive wipe. Anything the
+sweep raises is caught there, for the same reason -- a bad backup path must
+never cost a card its upload.
+
+Two invariants:
+
+- **`copy`, never `sync`.** The remote holds cards that were wiped locally long
+  ago, so it is a *superset* of any local tree. A sync would delete that
+  history.
+- **A missing `src` fails closed** — logged loudly and skipped, never read as
+  "the source is empty". That is the unmounted-volume guard; together with copy
+  semantics, a vanished disk cannot propagate as a deletion.
+
+A plain folder sitting inside `dest_base` is ignored by the card sweep (it has
+no `metadata.json` and no `.copying` marker), so the two can share a tree.
 
 ### Copier state machine (per card)
 `idle → copying → verifying → pending (verified, SHA1SUMS + metadata.json

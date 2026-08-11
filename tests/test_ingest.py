@@ -356,5 +356,236 @@ class UploaderTest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(rd, "b.mp4")))
 
 
+class BackupPathTest(unittest.TestCase):
+    def test_backup_targets_drops_incomplete_entries(self):
+        import uploader
+        cfg = {"backup": {"paths": [{"src": "/a/", "dst": "/x/"},
+                                    {"src": "/b"},          # no dst -> dropped
+                                    {"dst": "y"}]}}         # no src -> dropped
+        self.assertEqual(uploader.backup_targets(cfg), [("/a", "x")])
+
+    def test_backup_targets_absent_section_is_empty(self):
+        import uploader
+        self.assertEqual(uploader.backup_targets({}), [])
+
+    def test_backup_mirrors_plain_dir_writing_nothing_into_it(self):
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        src = os.path.join(tmp.name, "immich", "library")
+        remote = os.path.join(tmp.name, "remote")
+        make_card(src, {"2026/IMG.jpg": b"x" * 100, "note.txt": b"hi"})
+        before = sorted(os.listdir(src))
+
+        self.assertTrue(uploader.backup_dir(src, "immich/library", remote))
+        rd = os.path.join(remote, "immich", "library")
+        self.assertTrue(os.path.exists(os.path.join(rd, "note.txt")))
+        self.assertTrue(os.path.exists(os.path.join(rd, "2026", "IMG.jpg")))
+        # no uploaded.json / REMOTE_SHA1SUMS: Immich owns this directory
+        self.assertEqual(sorted(os.listdir(src)), before)
+
+    def test_backup_skips_missing_source_without_touching_remote(self):
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        remote = os.path.join(tmp.name, "remote")
+        os.makedirs(remote)
+        gone = os.path.join(tmp.name, "not-mounted", "library")
+        # the unmounted-volume case: no copy, no delete, just a loud skip
+        self.assertFalse(uploader.backup_dir(gone, "immich/library", remote))
+        self.assertEqual(os.listdir(remote), [])
+
+    def test_backup_sweep_counts_only_verified(self):
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        good = os.path.join(tmp.name, "good")
+        make_card(good, {"a.txt": b"a"})
+        cfg = {"backup": {"paths": [
+            {"src": good, "dst": "good"},
+            {"src": os.path.join(tmp.name, "missing"), "dst": "missing"}]}}
+        self.assertEqual(uploader.backup_sweep(cfg, os.path.join(tmp.name, "r")),
+                         (1, 2))
+
+    def test_card_sweep_ignores_backup_style_dirs(self):
+        """A plain folder inside dest_base (e.g. karmanyaah-google-photos after
+        the ingest move) has no metadata.json and no .copying, so the card
+        pipeline must not pick it up."""
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = os.path.join(tmp.name, "dest")
+        make_card(os.path.join(base, "karmanyaah-google-photos", "2019"),
+                  {"pic.jpg": b"x"})
+        self.assertEqual(list(uploader.ready_dirs(base)), [])
+
+
+class BackupRobustnessTest(unittest.TestCase):
+    """A malformed [backup] line must never crash the daemon: systemd would
+    crash-loop it and card uploads -- and thus the wipe interlock -- stall."""
+
+    def test_malformed_entries_never_raise(self):
+        import uploader
+        for paths in ("oops", ["just-a-string"], [["a", "b"]], [None], [42],
+                      [{"src": 123, "dst": "x"}], [{"src": "/a", "dst": None}],
+                      {"src": "/a"}):
+            with self.subTest(paths=paths):
+                self.assertEqual(uploader.backup_targets(
+                    {"backup": {"paths": paths}}), [])
+
+    def test_good_entries_survive_beside_bad_ones(self):
+        import uploader
+        cfg = {"backup": {"paths": ["junk", {"src": "/a", "dst": "x"}, 7]}}
+        self.assertEqual(uploader.backup_targets(cfg), [("/a", "x")])
+
+    def test_dst_cannot_escape_the_remote_base(self):
+        import uploader
+        cfg = {"backup": {"paths": [{"src": "/a", "dst": "../../elsewhere"}]}}
+        self.assertEqual(uploader.backup_targets(cfg), [])
+
+    def test_interval_is_never_fatal(self):
+        import uploader
+        for raw in ("6h", None, [], "", -5, 0):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    uploader.backup_every_seconds({"backup": {"interval": raw}}), 0.0)
+        self.assertEqual(
+            uploader.backup_every_seconds({"backup": {"interval": "900"}}), 900.0)
+        self.assertEqual(uploader.backup_every_seconds({}), 0.0)
+
+    def test_empty_source_is_not_reported_verified(self):
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        src = os.path.join(tmp.name, "mountpoint")     # exists, nothing in it
+        os.makedirs(src)
+        remote = os.path.join(tmp.name, "remote")
+        self.assertFalse(uploader.backup_dir(src, "immich/library", remote))
+        self.assertFalse(os.path.exists(remote))
+
+    def test_partial_named_files_are_backed_up_not_skipped(self):
+        """The card path excludes *.partial because the copier owns those
+        temps. On a foreign directory that would skip a real file and then fail
+        the unfiltered check on every sweep, forever."""
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        src = os.path.join(tmp.name, "src")
+        remote = os.path.join(tmp.name, "remote")
+        make_card(src, {"video.partial": b"real file, real name", "a.jpg": b"x"})
+        self.assertTrue(uploader.backup_dir(src, "d", remote))
+        self.assertTrue(os.path.exists(os.path.join(remote, "d", "video.partial")))
+
+    def test_card_uploads_still_exclude_partials(self):
+        """...while the card path keeps the exclude it needs."""
+        import uploader
+        from ingest_copier import mark_copying
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = os.path.join(tmp.name, "dest")
+        remote = os.path.join(tmp.name, "remote")
+        d = os.path.join(base, "UUID-1", "2026-01-01_00-00-00")
+        make_card(d, {"a.mp4": b"x" * 10, "b.mp4.partial": b"half"})
+        mark_copying(d)
+        uploader.upload_dir(d, base, remote, "sha1")
+        rd = os.path.join(remote, "UUID-1", "2026-01-01_00-00-00")
+        self.assertTrue(os.path.exists(os.path.join(rd, "a.mp4")))
+        self.assertFalse(os.path.exists(os.path.join(rd, "b.mp4.partial")))
+
+
+class BackupCadenceTest(unittest.TestCase):
+    """The copy pass and the hash scrub run on separate clocks: copying is a
+    listing diff, checking re-reads every byte of src."""
+
+    def _spy(self, uploader):
+        """Record the rclone subcommands actually invoked."""
+        calls = []
+        real = uploader._rclone
+        def spy(args, **kw):
+            calls.append(args[0])
+            return real(args, **kw)
+        uploader._rclone = spy
+        self.addCleanup(setattr, uploader, "_rclone", real)
+        return calls
+
+    def test_unchanged_path_is_not_rehashed_but_new_data_is(self):
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        src = os.path.join(tmp.name, "src")
+        remote = os.path.join(tmp.name, "remote")
+        make_card(src, {"a.txt": b"x"})
+        self.assertEqual(uploader.backup_dir(src, "d", remote), "verified")
+
+        calls = self._spy(uploader)
+        # nothing moved and no scrub due -> copy runs, check is skipped
+        self.assertEqual(uploader.backup_dir(src, "d", remote, scrub=False),
+                         "unchanged")
+        self.assertNotIn("check", calls)
+        # a new file moves bytes -> checked immediately, scrub=False or not
+        make_card(src, {"b.txt": b"y"})
+        self.assertEqual(uploader.backup_dir(src, "d", remote, scrub=False),
+                         "verified")
+        self.assertIn("check", calls)
+
+    def test_scrub_rehashes_even_when_nothing_moved(self):
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        src = os.path.join(tmp.name, "src")
+        remote = os.path.join(tmp.name, "remote")
+        make_card(src, {"a.txt": b"x"})
+        uploader.backup_dir(src, "d", remote)
+        calls = self._spy(uploader)
+        self.assertEqual(uploader.backup_dir(src, "d", remote, scrub=True),
+                         "verified")
+        self.assertIn("check", calls)
+
+    def test_sweep_defers_scrub_until_verify_every_elapses(self):
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        src = os.path.join(tmp.name, "src")
+        remote = os.path.join(tmp.name, "remote")
+        make_card(src, {"a.txt": b"x"})
+        cfg = {"backup": {"paths": [{"src": src, "dst": "d"}]}}
+        last = {}
+        self.assertEqual(uploader.backup_sweep(cfg, remote, 3600, last), (1, 1))
+        first = last["d"]
+
+        calls = self._spy(uploader)
+        self.assertEqual(uploader.backup_sweep(cfg, remote, 3600, last), (1, 1))
+        self.assertNotIn("check", calls)          # scrub not due yet
+        self.assertEqual(last["d"], first)        # timestamp not advanced
+
+        last["d"] -= 7200                          # pretend a day went by
+        self.assertEqual(uploader.backup_sweep(cfg, remote, 3600, last), (1, 1))
+        self.assertIn("check", calls)             # scrub now due
+        self.assertGreater(last["d"], first)
+
+    def test_sweep_without_a_last_map_checks_every_pass(self):
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        src = os.path.join(tmp.name, "src")
+        remote = os.path.join(tmp.name, "remote")
+        make_card(src, {"a.txt": b"x"})
+        cfg = {"backup": {"paths": [{"src": src, "dst": "d"}]}}
+        uploader.backup_sweep(cfg, remote)
+        calls = self._spy(uploader)
+        uploader.backup_sweep(cfg, remote)         # default: conservative
+        self.assertIn("check", calls)
+
+    def test_verify_every_is_never_fatal_and_defaults_conservatively(self):
+        import uploader
+        for raw in ("daily", None, [], -1, 0):
+            with self.subTest(raw=raw):
+                self.assertEqual(uploader.backup_verify_seconds(
+                    {"backup": {"verify_every": raw}}), 0.0)
+        self.assertEqual(uploader.backup_verify_seconds(
+            {"backup": {"verify_every": "86400"}}), 86400.0)
+        self.assertEqual(uploader.backup_verify_seconds({}), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

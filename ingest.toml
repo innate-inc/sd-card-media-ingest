@@ -54,6 +54,29 @@ enabled = false
 #   base = "/mnt/backup2/ingest"      # a second local disk
 base = ""
 
+[backup]
+# Plain directories mirrored to the same [remote] base, beside the SD-card
+# pipeline. Nothing here involves a card, the display, or wiping: each entry is
+# rclone-copied and then verified against the remote's own hashes, and NOTHING
+# is written back into src (a card ingest gets uploaded.json; these do not,
+# because another application owns the directory).
+#
+# dst is relative to [remote] base. copy, never sync -- the remote holds cards
+# that were wiped locally long ago, and a sync would delete them.
+#
+#   paths = [
+#     { src = "/media/jetson1/nvme/immich/library/library", dst = "immich/library" },
+#     { src = "/media/jetson1/nvme/immich/library/backups", dst = "immich/backups" },
+#   ]
+paths        = []      # empty = no plain-path backups
+interval     = 300     # seconds between copy passes. Cheap -- a copy that finds
+                       # nothing new is just a listing diff -- so this can be
+                       # short; it sets how quickly new data reaches the remote.
+verify_every = 86400   # seconds between full hash scrubs. The check re-reads
+                       # every byte of src, so it is the half worth throttling.
+                       # A copy that moved bytes is always checked immediately,
+                       # whatever this says. 0 = re-hash on every pass.
+
 [http]
 # The rclone-http service serves a read-only web listing (browse + download).
 # With target empty (the default) it AUTO-serves both the local [dest] base and

@@ -46,6 +46,11 @@ DEFAULTS = {
     "poll": {"interval_ms": 500},
     "wipe": {"enabled": False},              # real deletion also needs the env var
     "remote": {"base": ""},                  # rclone dest for the uploader; "" = off
+    # Plain directories mirrored to the same remote, beside the card pipeline.
+    # paths = [{src = "...", dst = "..."}]; dst is relative to [remote] base.
+    # interval = copy passes (cheap: a listing diff). verify_every = full hash
+    # scrub (re-reads every byte, so it is the half worth throttling).
+    "backup": {"paths": [], "interval": 300, "verify_every": 86400},
 }
 
 
