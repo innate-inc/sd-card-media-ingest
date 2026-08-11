@@ -28,3 +28,6 @@ __pycache__/
 # Editor
 .vscode/
 .direnv/
+
+# Immich: the live .env carries DB_PASSWORD; only env.example is tracked
+.env
