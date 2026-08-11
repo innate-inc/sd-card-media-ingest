@@ -1,95 +1,19 @@
 {
-  description = "SD-card / USB media ingest station: RP2350-LCD-1.47 firmware, simulator, and host daemon";
+  description = "SD-card / USB media ingest station: host daemon with a web display";
 
-  # Pinned to nixos-24.11: it ships pico-sdk 2.x / picotool 2.x (the first
-  # releases with RP2350 support) and still evaluates on older Nix versions.
+  # Pinned to nixos-24.11 for reproducibility; nothing here needs a newer
+  # toolchain now that the RP2350 firmware is gone.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
 
-  # LVGL: the on-device UI framework (also builds the desktop simulator).
-  inputs.lvgl = {
-    url = "github:lvgl/lvgl/v9.2.2";
-    flake = false;
-  };
-
-  outputs = { self, nixpkgs, lvgl }:
+  outputs = { self, nixpkgs }:
     let
-      # The board only builds on Linux hosts that Nix can cross-compile from.
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f:
         nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
     in
     {
-      packages = forAllSystems (pkgs:
-        let
-          # tinyusb (and friends) live in SDK submodules; stdio-over-USB needs it.
-          picoSdk = pkgs.pico-sdk.override { withSubmodules = true; };
-
-          # Device firmware running the shared LVGL UI on the RP2350 panel.
-          firmware-ui = pkgs.stdenv.mkDerivation {
-            pname = "rp2350-lcd-ingest-ui";
-            version = "0.1.0";
-            src = ./.;
-            nativeBuildInputs = [
-              pkgs.cmake pkgs.python3 pkgs.gcc-arm-embedded pkgs.picotool
-            ];
-            dontUseCmakeConfigure = true;  # let the Pico SDK cross toolchain win
-            buildPhase = ''
-              runHook preBuild
-              export PICO_SDK_PATH=${picoSdk}/lib/pico-sdk
-              cmake -B build -S device \
-                -DPICO_BOARD=pico2 \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DLVGL_DIR=${lvgl} \
-                -Dpicotool_DIR=${pkgs.picotool}/lib/cmake/picotool
-              cmake --build build -j"$NIX_BUILD_CORES"
-              runHook postBuild
-            '';
-            installPhase = ''
-              runHook preInstall
-              mkdir -p $out
-              cp build/firmware.uf2 build/firmware.elf $out/
-              runHook postInstall
-            '';
-            meta.description = "LVGL ingest-display firmware for Waveshare RP2350-LCD-1.47";
-          };
-
-          # Desktop simulator: the exact LVGL UI in an SDL window.
-          sim = pkgs.stdenv.mkDerivation {
-            pname = "ingest-sim";
-            version = "0.1.0";
-            src = ./.;
-            nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config ];
-            buildInputs = [ pkgs.SDL2 ];
-            cmakeDir = "../sim";
-            cmakeFlags = [ "-DLVGL_DIR=${lvgl}" ];
-            meta.description = "SDL desktop simulator for the ingest display UI";
-          };
-        in
-        {
-          inherit firmware-ui sim;
-          default = firmware-ui;
-        });
-
       apps = forAllSystems (pkgs:
         let
-          system = pkgs.stdenv.hostPlatform.system;
-          pythonEnv = pkgs.python3.withPackages (ps: [ ps.pyserial ]);
-          firmware-ui = self.packages.${system}.firmware-ui;
-
-          # writeShellScriptBin (not writeShellApplication) so the *system* sudo
-          # on the caller's PATH is used -- picotool needs root for raw USB
-          # access (without it, some builds segfault instead of erroring). `-f`
-          # reboots a running board into BOOTSEL via its reset interface.
-          flash = pkgs.writeShellScriptBin "flash" ''
-            uf2="${firmware-ui}/firmware.uf2"
-            echo "Flashing $uf2 (via sudo picotool)..."
-            exec sudo ${pkgs.picotool}/bin/picotool load -f -x "$uf2"
-          '';
-
-          # The real ingest daemon: discover -> copy -> verify -> manifest ->
-          # confirm -> (dry-run) wipe, emitting the same protocol. Split across
-          # host/ingest*.py; pyserial finds the device by USB VID/PID.
-          # `--dry-run` runs the full pipeline over fake cards, no hardware.
           # ./rclone.conf in the working dir wins (see .#store-rclone-config).
           useLocalRclone = ''
             if [ -z "''${RCLONE_CONFIG:-}" ] && [ -f "$PWD/rclone.conf" ]; then
@@ -97,13 +21,17 @@
             fi
           '';
 
+          # The ingest daemon: discover -> copy -> verify -> manifest -> confirm
+          # -> wipe, serving its display as a web page. Split across
+          # host/ingest*.py. `--dry-run` runs the full pipeline over fake cards,
+          # no hardware -- open the web page to watch it.
           ingest = pkgs.writeShellApplication {
             name = "ingest";
             # rclone does copy+verify; util-linux gives mount/umount for the
             # headless auto-mount (writeShellApplication restricts PATH).
-            runtimeInputs = [ pythonEnv pkgs.rclone pkgs.util-linux ];
+            runtimeInputs = [ pkgs.python3 pkgs.rclone pkgs.util-linux ];
             text = useLocalRclone + ''
-              exec python ${./host}/ingest.py "$@"
+              exec python3 ${./host}/ingest.py "$@"
             '';
           };
 
@@ -152,12 +80,12 @@
               esac
             }
 
-            # Migrate: remember whether the old (pre-rename) units ran, then stop
-            # + delete them so systemd can't keep a stale ExecStart alongside the
-            # new ones. (Add to this list if the unit names ever change again.)
-            ingest_was=$(state_of ingest)
-            uploader_was=$(state_of uploader)
-            http_was=$(state_of rclone-http)
+            # Capture whether each unit is running BEFORE rewriting it, so a
+            # reinstall never silently leaves the station stopped. Covers both
+            # the current $prefix-* names and the old pre-rename ones.
+            ingest_was=$(state_of $prefix-ingest);   [ "$ingest_was"   != no ] || ingest_was=$(state_of ingest)
+            uploader_was=$(state_of $prefix-uploader); [ "$uploader_was" != no ] || uploader_was=$(state_of uploader)
+            http_was=$(state_of $prefix-http);      [ "$http_was"     != no ] || http_was=$(state_of rclone-http)
             for old in ingest uploader rclone-http; do
               if [ -e /etc/systemd/system/$old.service ]; then
                 echo "migrating: removing old $old.service"
@@ -172,11 +100,18 @@
             render rclone-http | sudo tee /etc/systemd/system/$prefix-http.service     >/dev/null
             sudo systemctl daemon-reload
 
-            # Carry the old run/enable state over so a rename doesn't silently
-            # leave the station stopped.
             carry ingest   "$ingest_was"
             carry uploader "$uploader_was"
             carry http     "$http_was"
+            # daemon-reload alone does not restart a running unit onto its new
+            # ExecStart, so a reinstall would otherwise keep executing the old
+            # nix-store binary until someone noticed.
+            for u in ingest uploader http; do
+              if systemctl is-active --quiet "$prefix-$u.service"; then
+                echo "restarting $prefix-$u onto the new build"
+                sudo systemctl restart "$prefix-$u.service"
+              fi
+            done
             echo "Installed. If not already running: sudo systemctl enable --now $prefix-ingest $prefix-uploader $prefix-http"
           '';
 
@@ -194,8 +129,8 @@
 
           # `rclone serve http`: a read-only web listing of the backups, browsed
           # + downloaded over the LAN (the rclone-http service). target/addr come
-          # from [http] in ./ingest.toml. target is a local path or a remote
-          # (e.g. a "both:" combine remote to show local + cloud together).
+          # from [http] in ./ingest.toml. Distinct from the station's own web
+          # display ([web] addr), which is served by the ingest daemon itself.
           http = pkgs.writeShellApplication {
             name = "http";
             runtimeInputs = [ pkgs.rclone pkgs.gawk ];
@@ -234,31 +169,20 @@
           };
         in
         {
-          flash = { type = "app"; program = "${flash}/bin/flash"; };
           ingest = { type = "app"; program = "${ingest}/bin/ingest"; };
           uploader = { type = "app"; program = "${uploader}/bin/uploader"; };
           slots = { type = "app"; program = "${slots}/bin/slots"; };
           install-service = { type = "app"; program = "${install-service}/bin/install-service"; };
           rclone = { type = "app"; program = "${rclone}/bin/rclone"; };
           http = { type = "app"; program = "${http}/bin/http"; };
-          sim = { type = "app"; program = "${self.packages.${system}.sim}/bin/ingest-sim"; };
-          default = self.apps.${system}.sim;
+          default = { type = "app"; program = "${ingest}/bin/ingest"; };
         });
 
       # Tests. `nix flake check` runs them.
       checks = forAllSystems (pkgs:
-        let system = pkgs.stdenv.hostPlatform.system;
-        in {
-          # Unit test: feed fake serial lines to the parser, assert the model.
-          proto = pkgs.runCommandCC "test-proto" { } ''
-            gcc -I ${./app} ${./tests/test_proto.c} ${./app/proto.c} \
-              -O1 -Wall -Wextra -o test
-            ./test
-            touch $out
-          '';
-
-          # Unit test: the ingest daemon's copier + emitter over a fake card
-          # tree (verify-before-manifest, dry-run wipe, line grammar).
+        {
+          # Unit tests: copier + uploader + view + web over fake card trees and
+          # a real rclone against temp dirs.
           ingest-unit = pkgs.runCommand "test-ingest-unit"
             { nativeBuildInputs = [ pkgs.python3 pkgs.rclone ]; } ''
               mkdir host tests
@@ -268,53 +192,42 @@
               touch $out
             '';
 
-          # End-to-end: the REAL daemon (dry-run discovery + real copier) feeds
-          # the REAL sim; assert the frame rendered (same check as sim-render).
-          ingest-render = pkgs.runCommand "test-ingest-render"
-            { nativeBuildInputs = [ pkgs.python3 pkgs.rclone ]; } ''
-              python3 ${./host}/ingest.py --dry-run --interval-ms 100 --ticks 30 \
-                | ${self.packages.${system}.sim}/bin/ingest-sim --shot 800 out.ppm
-              python3 ${./tests/check_ppm.py} out.ppm
-              touch $out
-            '';
-
-          # Smoke test: a fixed serial feed through the real LVGL sim, asserting
-          # it rendered a non-blank frame (headless snapshot).
-          sim-render = pkgs.runCommand "test-sim-render"
-            { nativeBuildInputs = [ pkgs.python3 ]; } ''
-              printf '%s\n' 'bg 202020' 'numbers 1' \
-                'legend 22c35e uploaded' 'legend e69f00 uncopied' \
-                'slot 0 238000 900 42000 active 300 22c35e 200 0072b2 250 e69f00 0 0 SAND' \
-                'slot 1 128000 60 8500 active 500 22c35e 0 0 0 0 0 0 CARD2' \
-                | ${self.packages.${system}.sim}/bin/ingest-sim --shot 400 out.ppm
-              python3 ${./tests/check_ppm.py} out.ppm
+          # End-to-end: the REAL daemon (dry-run discovery + real copier)
+          # serving the REAL web display; assert the page renders a card bar.
+          # This replaces the old LVGL frame-render checks.
+          station-render = pkgs.runCommand "test-station-render"
+            { nativeBuildInputs = [ pkgs.python3 pkgs.rclone pkgs.curl ]; } ''
+              mkdir host && cp ${./host}/*.py host/
+              python3 host/ingest.py --dry-run --interval-ms 100 \
+                --web-addr 127.0.0.1:18081 --ticks 200 &
+              pid=$!
+              ok=
+              for _ in $(seq 60); do
+                sleep 0.25
+                if curl -sf http://127.0.0.1:18081/ -o page.html \
+                   && grep -q 'class="bar"' page.html; then ok=1; break; fi
+              done
+              kill $pid 2>/dev/null || true
+              [ -n "$ok" ] || { echo "web display never rendered a card"; \
+                                cat page.html 2>/dev/null; exit 1; }
+              grep -q "ingest station" page.html
               touch $out
             '';
         });
 
       devShells = forAllSystems (pkgs:
-        let
-          picoSdk = pkgs.pico-sdk.override { withSubmodules = true; };
-          pythonEnv = pkgs.python3.withPackages (ps: [ ps.pyserial ]);
-        in
         {
           default = pkgs.mkShell {
             packages = [
-              pkgs.cmake
-              pkgs.gcc-arm-embedded
-              pkgs.picotool
               pkgs.python3
-              pythonEnv
               pkgs.rclone            # the copier/uploader shell out to it
-              picoSdk
+              pkgs.curl
             ];
-            PICO_SDK_PATH = "${picoSdk}/lib/pico-sdk";
             shellHook = ''
               echo "SD-card ingest station dev shell"
-              echo "  device fw:  nix build .#firmware-ui   (-> ./result/firmware.uf2)"
-              echo "  flash:      nix run .#flash"
-              echo "  simulator:  nix run .#sim"
-              echo "  daemon:     nix run .#ingest -- --dry-run | nix run .#sim"
+              echo "  daemon:     nix run .#ingest -- --dry-run"
+              echo "  display:    http://localhost:8081/   (while it runs)"
+              echo "  slots:      nix run .#slots"
               echo "  tests:      python3 tests/test_ingest.py   (or: nix flake check)"
             '';
           };

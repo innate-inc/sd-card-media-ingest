@@ -2,58 +2,69 @@
 
 Copy footage off a bank of USB card readers, hash-verify every file, upload it
 to the cloud, and only wipe a card once a human confirms — with live per-card
-status on a small LCD.
+status on a web page.
 
-The system splits into a **dumb display** and a **smart host**, and the risky
-copy/verify/upload is delegated to **rclone**:
+All policy lives in the host daemon; the risky copy/verify/upload is delegated
+to **rclone**:
 
-- **Device** (`device/`, `app/`) — a **Waveshare RP2350-LCD-1.47-A** running an
-  LVGL UI. It renders the four-stage progress bars the host sends over a serial
-  line protocol, and sends back `confirm <i>` when the operator approves a wipe
-  (via the board's BOOTSEL button).
 - **Ingest daemon** (`host/ingest*.py`) — discovers readers in physical order,
   and per card runs `rclone copy` → `rclone check` into
   `dest_base/<label>-<uuid>/<ingest_date>/`, then waits for a confirm to wipe. It is the
   only thing that deletes, and only on an explicit confirm.
+- **Web display** (`host/ingest_web.py`, `host/ingest_view.py`) — one endpoint
+  of static HTML + CSS served by the daemon on `[web] addr` (default `:8081`).
+  No JavaScript. It shows the four-stage bar per card and carries the confirm
+  button, which is the only authorisation to wipe.
 - **Uploader** (`host/uploader.py`) — a *separate* process that streams each
   ingest to a cloud remote (rclone) as the files are copied, then proves it by
   re-checking against the remote's own hashes once the ingest is verified.
   Decoupled, so a card can be wiped and gone while its local copy is still
-  uploading.
-- **Simulator** (`sim/`) — the exact device UI in an SDL window, no hardware.
+  uploading. It also mirrors any plain directories listed in `[backup] paths`.
 
 The bar climbs through four colourblind-safe stages: **uncopied → copied →
-verified → uploaded**. See `ARCHITECTURE.md` for the full split + protocol and
+verified → uploaded**. See `ARCHITECTURE.md` for the full split and
 `DECISIONS.md` for the running rationale.
+
+## The display
+
+Open `http://<box>:8081/` while the daemon runs. One page, static HTML and CSS,
+reloading itself every 2 s — it works in any browser, including a text one.
+
+A card that is copied and verified shows a **confirm** button; pressing it is
+the only thing that authorises a wipe. The form carries the card's UUID as well
+as its slot, and the server refuses unless that UUID is *still* in that slot and
+*still* pending — so a page left open while cards were swapped cannot wipe the
+wrong card. Refusals are logged at WARNING.
+
+**Anyone who can reach that address can confirm a wipe.** The UUID check guards
+mistakes, not attackers. Narrow it with `[web] addr` (`"127.0.0.1:8081"`, or a
+Tailscale address) and keep it off the public internet.
 
 ## Quick start (Nix)
 
 Requires Nix with flakes enabled (`experimental-features = nix-command flakes`).
-rclone/pyserial/etc. come with the flake apps — nothing else to install.
+rclone etc. come with the flake apps — nothing else to install.
 
 ### Quickstart: test / develop (no hardware)
 
 ```bash
-# Watch the whole lifecycle in the simulator: the real daemon drives the sim
-# with fake cards (copy -> verify -> pending -> wipe). SPACE = BOOTSEL button
-# (hold = long press), ESC quits.
-nix run .#ingest -- --dry-run | nix run .#sim
+# Watch the whole lifecycle with fake cards (copy -> verify -> pending -> wipe),
+# then open http://localhost:8081/ and press confirm:
+nix run .#ingest -- --dry-run
 
-# ...and auto-confirm the wipe so it runs hands-free:
-nix run .#ingest -- --dry-run --auto-confirm 2 | nix run .#sim
+# ...or auto-confirm the wipe so it runs hands-free:
+nix run .#ingest -- --dry-run --auto-confirm 2
 
-nix flake check          # run the test suite (proto, copier+uploader, renders)
+nix flake check          # run the test suite (unit tests + a real page render)
 ```
 
-**Dev shell** — `nix develop` drops you into a shell with the whole toolchain
-(arm-none-eabi + cmake + Pico SDK for the firmware, python + pyserial, rclone,
-picotool). From there you can run things directly:
+**Dev shell** — `nix develop` drops you into a shell with python, rclone and
+curl. From there you can run things directly:
 
 ```bash
 nix develop
-python3 tests/test_ingest.py                     # host tests (needs rclone -- it's here)
-python3 host/ingest.py --dry-run | nix run .#sim  # run the daemon from source
-cmake -S device -B build -DLVGL_DIR=... && cmake --build build   # build fw by hand
+python3 tests/test_ingest.py                  # host tests (needs rclone -- it's here)
+python3 host/ingest.py --dry-run              # run the daemon from source
 ```
 
 ### Quickstart: install / setup / config (on the box)
@@ -81,10 +92,9 @@ nix run .#slots        # never copies; a diagnostic for the [hub] match. e.g.:
 #   1    2.1.1    sdd   -          (empty)
 #   5    2.2      sdb   256.0 GB   EXTREME
 #   ...
-# The live display numbers cards by insertion order, not by these ports.
+# The web display numbers cards by insertion order, not by these ports.
 
-# 3. Flash the display firmware, install + start the services:
-nix build .#firmware-ui && nix run .#flash
+# 3. Install + start the services:
 nix run .#install-service                  # units point at $PWD/ingest.toml
 sudo systemctl enable --now innate-sd-ingester-ingest innate-sd-ingester-uploader innate-sd-ingester-http
 journalctl -fu innate-sd-ingester-ingest   # watch it work
@@ -108,7 +118,9 @@ sudo systemctl restart innate-sd-ingester-ingest innate-sd-ingester-uploader
 journalctl -fu innate-sd-ingester-ingest   # confirm the new version is running
 ```
 
-(Re-flash the display too, if the firmware changed: `nix run .#flash`.)
+`install-service` restarts any unit that was already running, so the new build
+takes effect immediately; `daemon-reload` alone would leave the old nix-store
+binary executing.
 
 ## Wipe safety
 
@@ -192,22 +204,9 @@ auth). Keep it on your LAN, not the public internet. For an admin (read-write)
 UI — transfers, deletes — use the rclone Web GUI:
 `nix run .#rclone -- rcd --rc-web-gui` (fetches the GUI bundle once).
 
-## Board doesn't show up
-
-The tools find the board by its USB id (`2e8a`). If `nix run .#flash` says "no
-devices in BOOTSEL" or no `2e8a` serial port appears:
-
-- Plug the board **directly into the computer**, not through a USB hub.
-- Use a **data** USB-C cable, not a charge-only one.
-- For flashing, hold the **BOOT** button while plugging in to force BOOTSEL mode
-  (it appears as an `RP2350` mass-storage drive; you can also drag the `.uf2`
-  onto it).
-- Once firmware is running it enumerates as a serial port (`/dev/ttyACM*`).
-
 ## Permissions
 
-`picotool` needs root for raw USB access (without it, some builds *segfault*
-instead of erroring), so **`nix run .#flash` calls `sudo picotool`** — it'll
-prompt for your password. The CDC port (`/dev/ttyACM*`) the daemon reads needs
-your user in the `dialout` group (`sudo usermod -aG dialout $USER`, then log
-out/in), or a udev rule granting the `2e8a` tty.
+The ingest daemon mounts and unmounts cards itself (a headless box has no
+desktop mounter) and deletes files on a confirmed wipe, so it runs as **root**
+under systemd — that is why `install-service` uses `sudo`. Nothing else needs
+special privileges: the uploader and the two HTTP services are unprivileged.

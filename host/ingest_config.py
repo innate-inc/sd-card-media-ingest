@@ -28,9 +28,8 @@ def human_bytes(n):
     return "%.1f TB" % n
 
 DEFAULTS = {
-    "serial": {"vid": "2e8a", "pid": ""},   # "" vid+pid = stdout/stdin pipe mode
     # Readers are found as the drives plugged into this hub (by USB vid:pid);
-    # picks up SD readers + an SSD on the hub, not the nvme or the display board.
+    # picks up SD readers + an SSD on the hub, not the nvme.
     "hub": {"vid": "1a40", "pid": "0101", "path_prefix": ""},  # Terminus hub
     "dest": {"base": "/media/jetson1/jetson_backup/ingest/"},  # base/<label>-<uuid>/<date>/
     "hash": {"algo": "sha1"},               # the common hash across Drive + B2
@@ -51,6 +50,9 @@ DEFAULTS = {
     # interval = copy passes (cheap: a listing diff). verify_every = full hash
     # scrub (re-reads every byte, so it is the half worth throttling).
     "backup": {"paths": [], "interval": 300, "verify_every": 86400},
+    # The station's own web display, which is also the confirm channel. "" turns
+    # it off, leaving `confirm <i>` on stdin as the only way to confirm a wipe.
+    "web": {"addr": ":8081"},
 }
 
 

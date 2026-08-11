@@ -1,5 +1,9 @@
 # SD-card ingest station — plan
 
+> **Historical.** This is the original plan, kept as a record. The
+> RP2350 display it describes has since been superseded by the web
+> display — see DECISIONS.md and ARCHITECTURE.md for what shipped.
+
 Status: **implemented** (first pass) — but the copier design below has since
 been superseded by **rclone**: copy + verify are `rclone copy` / `rclone check`,
 the hash is **sha1**, files land in `dest_base/<uuid>/<ingest_date>/`, and a

@@ -4,12 +4,6 @@
 # anything to keep the default. CLI flags (--vid, --dest, --hub-prefix, ...)
 # override.
 
-[serial]
-# The device is found by USB VID/PID (its /dev/ttyACM* name isn't stable).
-# Leave both "" for pipe mode (protocol on stdout, confirms on stdin).
-vid = "2e8a"         # Raspberry Pi / RP2350
-pid = ""             # "" = match any product id under that vendor
-
 [hub]
 # Readers = the drives plugged into this USB hub, matched by the hub's vid:pid
 # (find it with `lsusb`). Picks up SD readers AND an SSD on the hub; the internal
@@ -76,6 +70,16 @@ verify_every = 86400   # seconds between full hash scrubs. The check re-reads
                        # every byte of src, so it is the half worth throttling.
                        # A copy that moved bytes is always checked immediately,
                        # whatever this says. 0 = re-hash on every pass.
+
+[web]
+# The station's display: one page, static HTML + CSS, no JavaScript. It is also
+# the confirm channel -- the button that authorises a wipe is a form POST, which
+# carries the card's uuid so a stale page cannot confirm a card that has since
+# been swapped into the same slot.
+#
+# Anyone who can reach this address can confirm a wipe, so keep it off the
+# public internet. "" disables the server entirely (stdin confirms only).
+addr = ":8081"       # distinct from [http] addr below, which is rclone's browser
 
 [http]
 # The rclone-http service serves a read-only web listing (browse + download).

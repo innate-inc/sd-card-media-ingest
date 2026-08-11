@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """Ingest daemon: discover cards behind the reader hub, copy + verify their
-files, drive the device display, and wipe on confirm (see ARCHITECTURE.md).
+files, serve the station's web display, and wipe on confirm (see
+ARCHITECTURE.md).
 
-    nix run .#ingest -- --dry-run | nix run .#sim      # no hardware needed
-    nix run .#ingest -- --config host/ingest.toml      # the real thing
+    nix run .#ingest -- --dry-run          # fake cards; open the web page
+    nix run .#ingest                       # the real thing
 
 The pieces live in sibling modules so the sensitive part is small to review:
   ingest_config    defaults + TOML
   ingest_discovery which slots hold which card
   ingest_copier    copy -> verify -> manifest -> wipe   (the deletion path)
-  ingest_emit      model -> device line protocol
-  ingest_link      serial (by USB VID/PID) + confirm channel
+  ingest_view      model -> render-ready numbers
+  ingest_web       the one-endpoint web display + confirm
+  ingest_link      `confirm <i>` on stdin (pipe mode)
 
 Files land in  dest_base/<label>-<uuid>/<ingest_date>/<relpath>  -- a fresh directory
 per ingest, so nothing is overwritten and there is no resume/dedup to reason
-about. Wiping needs a device `confirm <i>` AND is a logged dry run unless armed
-by both `[wipe] enabled = true` and `--enable-wipe`.
+about. Wiping needs a confirm AND is a logged dry run unless armed by
+`[wipe] enabled = true`.
 """
 import argparse
 import logging
@@ -31,24 +33,11 @@ from ingest_config import (as_bool, config_paths, human_bytes, load_config,
 from ingest_copier import (CardJob, COPYING, IDLE, PENDING, upload_progress,
                            VERIFYING, WIPING)
 from ingest_discovery import HubDiscovery, MockDiscovery, UNKNOWN
-from ingest_emit import Emitter
-from ingest_link import confirm_reader, ReconnectingSerial
+from ingest_link import confirm_reader
+from ingest_view import View
+from ingest_web import Station, serve
 
 log = logging.getLogger("ingest")
-
-
-def open_display(cfg, args):
-    """Return (read_confirms, out): read_confirms(queue) is the confirm-reader
-    thread body; out is the emitter's line sink. A serial display (found by
-    VID/PID) transparently reconnects across unplugs; otherwise stdin/stdout
-    (pipe / dry-run mode)."""
-    if not args.dry_run:
-        vid = args.vid if args.vid is not None else cfg["serial"].get("vid", "")
-        pid = args.pid if args.pid is not None else cfg["serial"].get("pid", "")
-        if vid or pid:
-            link = ReconnectingSerial(vid, pid)
-            return link.read_confirms, link
-    return (lambda q: confirm_reader(sys.stdin, q)), sys.stdout
 
 
 def _free_col(used):
@@ -76,12 +65,12 @@ def main():
     ap.add_argument("--config", help="one TOML config, replacing the default "
                     "./ingest.toml + ./config.toml layering")
     ap.add_argument("--dry-run", action="store_true",
-                    help="fake cards in a scratch dir; no hardware, no serial")
-    ap.add_argument("--vid", help="USB vendor id of the device (overrides config)")
-    ap.add_argument("--pid", help="USB product id of the device (overrides config)")
+                    help="fake cards in a scratch dir; no hardware")
     ap.add_argument("--dest", help="override [dest] base")
     ap.add_argument("--hub-prefix", help="override [hub] path_prefix")
     ap.add_argument("--interval-ms", type=int, help="override [poll] interval_ms")
+    ap.add_argument("--web-addr", help="override [web] addr; empty disables the "
+                    "web display, leaving stdin as the only confirm channel")
     ap.add_argument("--ticks", type=int, default=0,
                     help="exit after N ticks (0 = run forever); for tests")
     ap.add_argument("--auto-confirm", type=float, default=0, metavar="S",
@@ -116,15 +105,23 @@ def main():
     log.info("dest base: %s ; %d reader slot(s)",
              cfg["dest"]["base"], len(disco.slots()))
 
-    read_confirms, tx = open_display(cfg, args)
-    emitter = Emitter(tx, cfg["segments"])
+    view = View(cfg["segments"])
+    station = Station()
+    station.configure(view.legend(), view.bg, wipe_armed)
     confirms = queue.Queue()
-    threading.Thread(target=read_confirms, args=(confirms,), daemon=True).start()
 
-    emitter.preamble()
-    # A reconnecting serial display comes up blank; re-send the preamble (bg,
-    # legend, numbers) whenever it (re)connects. Pipe mode has no such method.
-    display_reconnected = getattr(tx, "take_reconnected", None)
+    # Two confirm sources feeding one queue: the web form (normal operation) and
+    # `confirm <i>` on stdin (pipe mode / tests). Under systemd stdin is
+    # /dev/null, so that reader simply retires at EOF.
+    web_addr = args.web_addr if args.web_addr is not None \
+        else cfg["web"].get("addr", "")
+    if web_addr:
+        serve(web_addr, station, confirms, view.numbers)
+    else:
+        log.warning("web display disabled; stdin is the only confirm channel")
+    threading.Thread(target=confirm_reader, args=(sys.stdin, confirms),
+                     daemon=True).start()
+
     # The display is a list of the cards plugged in, in insertion order: each
     # gets the lowest free display column when it appears and keeps it (so its
     # confirm number never shifts under it) until removal, which frees it again.
@@ -137,9 +134,6 @@ def main():
     tick = 0
 
     while True:
-        if display_reconnected and display_reconnected():
-            emitter.preamble()
-
         slots = disco.slots()
 
         # Reconcile discovery with running jobs.
@@ -180,6 +174,9 @@ def main():
 
         # Wipe confirmations -- the only path to deletion. The confirm index is
         # the display column the operator selected, so it targets what they saw.
+        # ingest_web has already checked the card's uuid still matches that
+        # column and is pending; this re-checks the column because stdin
+        # confirms carry no uuid at all.
         try:
             while True:
                 c = confirms.get_nowait()
@@ -208,9 +205,10 @@ def main():
                 log.info("slot %d: %s wiped -- unmounted, safe to remove",
                          job.col, job.card.label)
 
-        # One display frame: the present cards in column order.
+        # Publish one frame: the present cards in column order. Swapping a whole
+        # new list in means a web request always renders one consistent tick.
         ncols = max(by_col) + 1 if by_col else 0
-        emitter.tick([by_col.get(c) for c in range(ncols)])
+        station.publish(view.cards([by_col.get(c) for c in range(ncols)]))
 
         tick += 1
         if args.ticks and tick >= args.ticks:

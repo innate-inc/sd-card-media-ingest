@@ -243,3 +243,33 @@ removed — see item 55.)
       `./ingest.toml` + `./rclone.conf`.
     - **Wipe arming is TOML-only** now: `[wipe] enabled = true` is the single
       switch (dropped the `INGEST_ENABLE_WIPE` env var); revises item 56.
+
+## The display is a web page instead of a panel
+
+The station originally drove a Waveshare RP2350-LCD-1.47 over USB-CDC: a shared
+C UI core (`app/`) compiled into both device firmware (`device/`) and an SDL
+simulator (`sim/`), fed a line protocol the firmware parsed with `sscanf`, with
+the RP2350's BOOTSEL button read at runtime as the confirm input.
+
+That is all removed. The display is now one endpoint of static HTML and CSS
+served by the daemon itself.
+
+**Why.** The panel was most of the repository — a C UI core, firmware, a
+simulator, a line protocol, an on-device three-state button UI, and three of the
+five tests — to render four bars and return one line of input. A page does the
+same job with no firmware to flash, no protocol to keep two implementations
+agreeing on, no simulator needed to preview it, and it is legible from any
+device on the network rather than only from in front of the machine.
+
+**What was kept.** The segment maths and the copy-rate EMA moved intact from
+`ingest_emit.py` to `ingest_view.py`; only the output target changed. The
+column-assignment rule (each card holds its column until removal, so its confirm
+number never shifts) is unchanged, as is `confirm <i>` on stdin for pipe mode.
+
+**What it cost.** The confirm went from a physical act to a network request. A
+button confirms what is physically present; a page confirms what it displayed,
+possibly minutes ago. The mitigation is that a confirm names the card's uuid and
+is refused unless that uuid is still in that column and still pending — see
+ARCHITECTURE.md. The part that is genuinely weaker is reach: anyone who can
+reach the address can confirm, so it must stay off the public internet. That
+trade was made deliberately, not overlooked.

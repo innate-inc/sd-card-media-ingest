@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Unit tests for the ingest daemon's copier + emitter.
+"""Unit tests for the ingest daemon: copier, uploader, view and web UI.
 
 Runs the real CardJob pipeline over a fake card tree in a temp dir and asserts
 the locked rules: fresh dated dest dir, metadata preserved, verify-before-
 manifest, hash-mismatch keeps the card, wipe only on confirm of a pending slot,
-dry-run wipe deletes nothing, and the emitted slot lines fit the device parser's
-grammar. Stdlib only:
+dry-run wipe deletes nothing, the view's segment maths stays exact, and the
+web confirm refuses a stale page. Stdlib only:
 
     python3 tests/test_ingest.py
 """
 import hashlib
-import io
 import json
 import os
-import re
 import sys
 import tempfile
 import time
@@ -24,12 +22,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from ingest_config import DEFAULTS, as_bool, color, load_config
 from ingest_copier import Abort, CardJob, COPYING, EMPTY, ERROR, PENDING
 from ingest_discovery import Card
-from ingest_emit import Emitter
-
-# What app/proto.c's sscanf accepts for a slot line (4 pairs mandatory).
-SLOT_RE = re.compile(
-    r"^slot (\d+) (-?\d+) (-?\d+) (-?\d+) (idle|active|done|error|paused|pending)"
-    r"( \d+ [0-9a-f]{1,6}){4} (.*)$")
 
 
 def make_card(root, files):
@@ -216,60 +208,129 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(color(0x22C35E), 0x22C35E)
 
 
-class EmitterTest(unittest.TestCase):
-    def test_lines_fit_the_device_grammar(self):
-        out = io.StringIO()
-        em = Emitter(out, DEFAULTS["segments"])
-        em.preamble()
-
+class ViewTest(unittest.TestCase):
+    def test_segments_are_permille_of_the_cards_own_capacity(self):
+        """The maths the device protocol used to carry, now feeding HTML:
+        cumulative boundaries rounded then differenced, so the stack always
+        sums to exactly full and the free remainder never jitters."""
+        from ingest_view import View
+        v = View(DEFAULTS["segments"])
         card = Card("mock-0", "A-VERY-LONG-CARD-LABEL-XYZ", "U", "/x",
-                           10_000_000_000)
-        job = CardJob.__new__(CardJob)   # no filesystem needed
+                    10_000_000_000)
+        job = CardJob.__new__(CardJob)      # no filesystem needed
         job.card, job.state, job.error = card, COPYING, ""
         job.dest = "/dest/U"
         job.total_bytes = 9_000_000_000
         job.copied_bytes = 5_000_000_000
         job.verified_bytes = 2_000_000_000
         job.uploaded_bytes = 1_000_000_000
-        em.tick([job, None])
-        lines = out.getvalue().splitlines()
 
-        slots = [l for l in lines if l.startswith("slot ")]
-        self.assertEqual(len(slots), 2)
-        for l in slots:
-            self.assertRegex(l, SLOT_RE)
-        m = SLOT_RE.match(slots[0])
-        self.assertEqual(int(m.group(2)), 10_000)      # size_mb
-        nums = [int(x) for x in slots[0].split()[6:14:2]]
+        cards = v.cards([job, None])
+        self.assertEqual(len(cards), 1)          # the empty column is absent
+        c = cards[0]
+        self.assertEqual(c["size_mb"], 10_000)
+        self.assertEqual(c["uuid"], "U")
+        self.assertFalse(c["pending"])           # only PENDING may be confirmed
         # relative to the card's own 10 GB: uploaded/verified/copied/uncopied
-        self.assertEqual(nums, [100, 100, 300, 400])
-        self.assertLessEqual(sum(nums), 1000)          # relative scale
-        self.assertLessEqual(len(m.group(7)), 23)      # MAX_LABEL - 1
-        self.assertEqual(slots[1], "slot 1 -1 -1 -1 idle 0 0 0 0 0 0 0 0 empty")
-        self.assertIn("hb", lines)
-        self.assertTrue(any(l.startswith("path 0 ") for l in lines))
-        self.assertIn("bg 202020", lines)
-        # legend clear + 5 rows (uploaded/verified/copied/uncopied/free space)
-        self.assertEqual(sum(l.startswith("legend ") for l in lines), 6)
+        self.assertEqual([pm for _n, pm, _c in c["segments"]],
+                         [100, 100, 300, 400])
+        self.assertEqual(sum(pm for _n, pm, _c in c["segments"]) + c["free"],
+                         1000)
 
-    def test_removed_column_is_cleared_after_list_shrinks(self):
-        # A card's column must be blanked when it's gone -- even though the
-        # daemon then passes a shorter list (the removed column is off the end).
-        out = io.StringIO()
-        em = Emitter(out, DEFAULTS["segments"])
+    def test_pending_card_is_marked_confirmable(self):
+        from ingest_view import View
+        v = View(DEFAULTS["segments"])
         job = CardJob.__new__(CardJob)
-        job.card = Card("m", "C", "U", "/x", 1_000_000_000)
-        job.state, job.error, job.dest = COPYING, "", "/d"
+        job.card = Card("m", "C", "UUID-9", "/x", 1_000_000_000)
+        job.state, job.error, job.dest = PENDING, "", "/d"
         job.total_bytes = job.copied_bytes = job.verified_bytes = 0
         job.uploaded_bytes = 0
-        em.tick([job, job])                     # two cards -> columns 0 and 1
-        out.truncate(0); out.seek(0)
-        em.tick([job])                          # column 1's card removed
-        lines = out.getvalue().splitlines()
-        self.assertIn("slot 1 -1 -1 -1 idle 0 0 0 0 0 0 0 0 empty", lines)
-        out.truncate(0); out.seek(0)
-        em.tick([job])                          # already cleared -> not re-sent
-        self.assertNotIn("slot 1", out.getvalue())
+        c = v.cards([job])[0]
+        self.assertTrue(c["pending"])
+        self.assertEqual(c["status"], "pending")
+
+
+class WebTest(unittest.TestCase):
+    """The page is now the confirm channel, so its interlock is load-bearing:
+    a confirm must name a card that is still in that slot and still pending."""
+
+    CARD = {"col": 0, "uuid": "UUID-1", "label": "CARD", "status": "pending",
+            "pending": True, "size_mb": 32000, "eta_s": -1, "kbps": -1,
+            "segments": [("uploaded", 400, "#009e73")], "free": 600,
+            "path": "/dest/CARD", "wipe_armed": True}
+
+    def _serve(self, **over):
+        import queue
+        from ingest_web import Station, serve
+        card = dict(self.CARD, **over)
+        st = Station()
+        st.configure([("#009e73", "uploaded")], "#202020", True)
+        st.publish([card])
+        q = queue.Queue()
+        srv = serve("127.0.0.1:0", st, q)
+        self.addCleanup(srv.shutdown)
+        return "http://127.0.0.1:%d/" % srv.server_address[1], q
+
+    @staticmethod
+    def _post(url, **fields):
+        import urllib.parse
+        import urllib.request
+        data = urllib.parse.urlencode(fields).encode()
+        return urllib.request.urlopen(urllib.request.Request(url, data=data))
+
+    def test_get_renders_the_card_and_a_confirm_form(self):
+        import urllib.request
+        url, _q = self._serve()
+        page = urllib.request.urlopen(url).read().decode()
+        self.assertIn("ingest station", page)
+        self.assertIn('class="bar"', page)
+        self.assertIn('name="uuid" value="UUID-1"', page)
+        self.assertIn("wipe ARMED", page)
+        self.assertNotIn("<script", page)          # no JS, on purpose
+
+    def test_no_confirm_form_unless_the_card_is_pending(self):
+        import urllib.request
+        url, _q = self._serve(pending=False, status="active")
+        page = urllib.request.urlopen(url).read().decode()
+        self.assertNotIn("<form", page)
+
+    def test_matching_confirm_enqueues_that_column(self):
+        url, q = self._serve()
+        r = self._post(url, col="0", uuid="UUID-1")   # 303 -> followed to GET /
+        self.assertEqual(r.status, 200)
+        self.assertEqual(q.get_nowait(), 0)
+
+    def test_stale_uuid_is_refused_and_confirms_nothing(self):
+        """The failure a physical button cannot have: the page showed one card,
+        the operator swapped in another, then clicked."""
+        import queue
+        import urllib.error
+        url, q = self._serve()
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post(url, col="0", uuid="A-DIFFERENT-CARD")
+        self.assertEqual(cm.exception.code, 409)
+        self.assertRaises(queue.Empty, q.get_nowait)
+
+    def test_confirm_for_a_non_pending_card_is_refused(self):
+        import queue
+        import urllib.error
+        url, q = self._serve(pending=False, status="active")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post(url, col="0", uuid="UUID-1")
+        self.assertEqual(cm.exception.code, 409)
+        self.assertRaises(queue.Empty, q.get_nowait)
+
+    def test_garbage_form_fields_are_refused_not_crashed(self):
+        import queue
+        import urllib.error
+        url, q = self._serve()
+        for fields in ({"col": "nope", "uuid": "UUID-1"}, {"col": "0"},
+                       {}, {"col": "-1", "uuid": ""}):
+            with self.subTest(fields=fields):
+                with self.assertRaises(urllib.error.HTTPError) as cm:
+                    self._post(url, **fields)
+                self.assertEqual(cm.exception.code, 409)
+        self.assertRaises(queue.Empty, q.get_nowait)
 
 
 class UploaderTest(unittest.TestCase):
