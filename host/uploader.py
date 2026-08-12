@@ -166,9 +166,13 @@ def backup_targets(cfg):
                       "skipping", i)
             continue
         src, dst = src.rstrip("/"), dst.strip("/")
-        if not src or not dst:
-            log.error("[backup] paths[%d]: needs both src and dst; skipping", i)
+        if not src:
+            log.error("[backup] paths[%d]: needs a src; skipping", i)
             continue
+        # dst may be "": that mirrors onto the remote base itself, which is how
+        # one entry covers a whole tree whose subdirs the card uploader already
+        # writes at that same level -- those become skips, the rest get backed
+        # up. Only src is mandatory.
         if ".." in dst.split("/"):
             log.error("[backup] paths[%d]: dst must stay under the remote base "
                       "(no '..'); skipping", i)

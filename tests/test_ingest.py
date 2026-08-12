@@ -425,6 +425,26 @@ class BackupPathTest(unittest.TestCase):
                                     {"dst": "y"}]}}         # no src -> dropped
         self.assertEqual(uploader.backup_targets(cfg), [("/a", "x")])
 
+    def test_empty_dst_means_the_remote_base_itself(self):
+        """One entry can cover a whole tree by mirroring onto the base: the
+        subdirs the card uploader already wrote there become skips."""
+        import uploader
+        cfg = {"backup": {"paths": [{"src": "/media/x/ingest", "dst": ""}]}}
+        self.assertEqual(uploader.backup_targets(cfg),
+                         [("/media/x/ingest", "")])
+
+    def test_root_dst_targets_the_base_with_no_double_slash(self):
+        import uploader
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        src = os.path.join(tmp.name, "tree"); remote = os.path.join(tmp.name, "r")
+        make_card(src, {"card-A/2026-01-01/a.txt": b"x"})
+        self.assertEqual(uploader.backup_dir(src, "", remote), "verified")
+        # lands at <remote>/card-A/..., i.e. the same level the card uploader
+        # writes to -- not nested under an extra directory
+        self.assertTrue(os.path.exists(
+            os.path.join(remote, "card-A", "2026-01-01", "a.txt")))
+
     def test_backup_targets_absent_section_is_empty(self):
         import uploader
         self.assertEqual(uploader.backup_targets({}), [])
