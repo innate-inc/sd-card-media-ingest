@@ -102,7 +102,9 @@ h1{font-size:1rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
 .badge{font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;
        padding:.15rem .5rem;border-radius:3px;border:1px solid currentColor}
 .st-active{color:#f0e442}.st-pending{color:#0072b2}
-.st-error{color:#ff6b6b}.st-idle{color:#6f6f6f}
+.st-error{color:#ff6b6b}.st-idle{color:#6f6f6f}.st-empty{color:#6f6f6f}
+.card.blank{opacity:.6}
+.blank .name{font-weight:400}
 .bar{display:flex;height:1.5rem;border-radius:3px;overflow:hidden;
      background:%(bg)s;border:1px solid #303030}
 .bar span{display:block;height:100%%}
@@ -138,6 +140,16 @@ def _bar(card, bg):
 
 def _card_html(card, bg, numbers=True):
     e = html.escape
+    if card.get("empty"):
+        # Occupied slot, nothing to copy. No bar, no controls -- but visible,
+        # so the operator knows the station saw the card.
+        return ('<div class="card blank"><div class="top">'
+                '<span class="name">%s</span><span class="col">slot %d</span>'
+                '<span class="badge st-empty">empty</span></div>'
+                '<div class="meta"><span>%s card</span>'
+                '<span>no files to copy</span></div></div>'
+                % (e(card["label"]), card["col"],
+                   e(human_bytes(card["size_mb"] * 1_000_000))))
     cls = "card err" if card["status"] == "error" else "card"
     out = ['<div class="%s">' % cls,
            '<div class="top"><span class="name">%s</span>' % e(card["label"]),
@@ -184,6 +196,7 @@ def render(cards, legend, bg, wipe_armed, numbers=True):
         for c, n in legend))
     if not cards:
         head.append('<div class="empty">no cards inserted</div>')
+    # note: a card holding no files still appears, as a "blank" row
     else:
         head.extend(_card_html(c, bg, numbers) for c in cards)
     return _page("".join(head), bg)

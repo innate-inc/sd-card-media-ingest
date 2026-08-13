@@ -19,7 +19,8 @@ log = logging.getLogger("ingest")
 
 # job state -> status word (built once). EMPTY is handled in cards().
 _STATUS = {IDLE: "idle", COPYING: "active", VERIFYING: "active",
-           PENDING: "pending", WIPING: "active", ERROR: "error"}
+           PENDING: "pending", WIPING: "active", ERROR: "error",
+           EMPTY: "empty"}
 
 
 def css(v):
@@ -53,8 +54,8 @@ class View:
         column; empty columns are simply absent."""
         out = []
         for c, job in enumerate(jobs):
-            if job is None or job.state == EMPTY:
-                continue
+            if job is None:
+                continue                       # nothing in that reader at all
             out.append(self._card(c, job))
         return out
 
@@ -86,6 +87,10 @@ class View:
             label = job.card.label
         return {
             "col": i,
+            # A card that mounted but holds no files. Rendered as a present-but
+            # -empty slot rather than omitted, so "card in reader with nothing
+            # on it" cannot be mistaken for "no card in reader".
+            "empty": state == EMPTY,
             "uuid": job.card.uuid or "",
             "label": label,
             "status": _STATUS.get(state, "idle"),
