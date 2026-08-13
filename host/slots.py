@@ -42,7 +42,7 @@ def main():
         print("%-4d %-8s %-5s %-10s %s" % (i, port, dev, size, what))
     if not disco.slot_ids:
         print("(no drives found behind the configured hub -- check [hub] in "
-              "%s, or `lsusb`)" % (config or "the built-in defaults"))
+              "%s, or `lsusb`)" % (args.config or "the built-in defaults"))
 
 
 if __name__ == "__main__":
